@@ -8,14 +8,17 @@ feels like a filesystem. Nothing is persisted. Forgetting is a feature.
 ## Build
 
 ```
-go build ./...
-go test ./... -race
+make build        # bin/sor, bin/cli, bin/sample-app
+make test-race    # go test ./... -race
+make check        # fmt + vet + race tests
+make help         # all targets
 ```
 
 ## Run the system of record
 
 ```
-go run ./cmd/sor -listen :4318 -retention 3h -max-samples 1000000
+make run-sor                                  # :4318, 3h retention, 1M samples
+make run-sor LISTEN=:9999 RETENTION=1h MAX_SAMPLES=100000
 ```
 
 Point any OTLP/HTTP exporter at `http://localhost:4318` (protobuf or JSON
@@ -26,7 +29,7 @@ encoding). Namespace and service come from the `service.namespace` and
 ## Browse
 
 ```
-go run ./cmd/cli -sor http://localhost:4318
+make run-cli                                  # SOR_URL=http://localhost:4318
 /> ls
 iam/
 /> cd iam/iam-api
@@ -39,10 +42,38 @@ go.memory.used.dat
 Layout: `/<namespace>/<service>/{logs,metrics}/<signal-name>.dat`.
 Commands: `ls`, `cd`, `cat`, `pwd`, `help`, `exit`.
 
+## Try it with the sample app
+
+`cmd/sample-app` is a fake web service built on the OpenTelemetry Go SDK.
+It exports request counters, a latency histogram, in-flight requests, a
+memory gauge, CPU utilization, and uptime every 5 seconds, plus one log
+record per simulated request.
+
+```
+make run-sor                     # terminal 1
+make run-sample-app              # terminal 2
+make run-cli                     # terminal 3
+/> cd iam/iam-api
+/iam/iam-api> ls metrics
+go.memory.used.dat
+http.server.active_requests.dat
+http.server.duration.count.dat
+http.server.duration.sum.dat
+http.server.errors.dat
+http.server.requests.dat
+process.cpu.utilization.dat
+process.uptime.dat
+```
+
+Override `SAMPLE_NS`, `SAMPLE_SVC`, and `SAMPLE_RPS` to fake more
+services, e.g. `make run-sample-app SAMPLE_NS=web SAMPLE_SVC=frontend`.
+`alert.sample-app.conf` holds matching alert rules; edit the webhook URL and
+start the SoR with `make run-sor ALERTS=alert.sample-app.conf`.
+
 ## Alerting
 
-Start the SoR with `-alerts alert.conf`. The file declares channels and
-rules, one per line:
+Start the SoR with `make run-sor ALERTS=alert.conf`. The file declares
+channels and rules, one per line:
 
 ```
 # channel <name> slack <incoming-webhook-url>
