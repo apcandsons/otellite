@@ -1,0 +1,9 @@
+# binaries
+/sor
+/cli
+/bin/
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/
