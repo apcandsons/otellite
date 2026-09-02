@@ -30,7 +30,8 @@ func NewAlerter(rules []domain.Rule, notifier Notifier) *Alerter {
 }
 
 // Observe feeds one sample to every rule on its stream and sends a
-// notification for each rule that fires. Non-numeric samples are ignored.
+// notification for each rule that fires or resolves. Non-numeric samples
+// are ignored.
 func (a *Alerter) Observe(id domain.StreamID, s domain.Sample) error {
 	monitors := a.monitors[id]
 	if len(monitors) == 0 {
@@ -40,18 +41,18 @@ func (a *Alerter) Observe(id domain.StreamID, s domain.Sample) error {
 	if err != nil {
 		return nil
 	}
-	var fired []domain.Rule
+	var pending []domain.Notification
 	a.mu.Lock()
 	for _, m := range monitors {
-		if m.Observe(s.Time, value) {
-			fired = append(fired, m.Rule)
+		if ev := m.Observe(s.Time, value); ev != domain.NoEvent {
+			pending = append(pending, domain.Notification{Rule: m.Rule, Event: ev, Time: s.Time, Value: s.Value, Unit: s.Unit})
 		}
 	}
 	a.mu.Unlock()
 
 	var errs []error
-	for _, rule := range fired {
-		if err := a.notifier.Notify(domain.Notification{Rule: rule, Time: s.Time, Value: s.Value, Unit: s.Unit}); err != nil {
+	for _, nt := range pending {
+		if err := a.notifier.Notify(nt); err != nil {
 			errs = append(errs, err)
 		}
 	}

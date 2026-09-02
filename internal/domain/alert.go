@@ -51,8 +51,21 @@ type Rule struct {
 	Channel   string
 }
 
+// Event is what a Monitor reports after observing a sample.
+type Event int
+
+const (
+	NoEvent  Event = iota
+	Fired          // the breach has been sustained for Rule.For
+	Resolved       // the stream recovered after Fired
+)
+
+var eventNames = map[Event]string{NoEvent: "none", Fired: "fired", Resolved: "resolved"}
+
+func (e Event) String() string { return eventNames[e] }
+
 // Monitor tracks one rule across successive samples. It fires once per
-// breach episode and re-arms once the stream recovers.
+// breach episode, reports Resolved when a fired episode ends, and re-arms.
 type Monitor struct {
 	Rule  Rule
 	since time.Time
@@ -61,25 +74,31 @@ type Monitor struct {
 
 func NewMonitor(rule Rule) *Monitor { return &Monitor{Rule: rule} }
 
-// Observe feeds one sample and reports whether the alert should fire now.
-func (m *Monitor) Observe(t time.Time, value float64) bool {
+// Observe feeds one sample and reports the resulting event, if any.
+func (m *Monitor) Observe(t time.Time, value float64) Event {
 	if !m.Rule.Op.Holds(value, m.Rule.Threshold) {
+		wasFired := m.fired
 		m.since, m.fired = time.Time{}, false
-		return false
+		if wasFired {
+			return Resolved
+		}
+		return NoEvent
 	}
 	if m.since.IsZero() {
 		m.since = t
 	}
 	if m.fired || t.Sub(m.since) < m.Rule.For {
-		return false
+		return NoEvent
 	}
 	m.fired = true
-	return true
+	return Fired
 }
 
-// Notification is what gets sent to a channel when a rule fires.
+// Notification is what gets sent to a channel when a rule fires or resolves.
+// Time, Value and Unit describe the sample that triggered the event.
 type Notification struct {
 	Rule  Rule
+	Event Event
 	Time  time.Time
 	Value string
 	Unit  string

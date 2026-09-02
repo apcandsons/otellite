@@ -70,3 +70,22 @@ func TestUnknownChannelAndHTTPFailure(t *testing.T) {
 		t.Errorf("unknown channel err = %v", err)
 	}
 }
+
+func TestResolvedText(t *testing.T) {
+	nt := notification()
+	nt.Event = domain.Resolved
+	nt.Value = "412345678"
+	text := slack.Text(nt, time.FixedZone("JST", 9*3600))
+	for _, want := range []string{"resolved", "/iam/iam-api/metrics/go.memory.used.dat", "> 500000000", "412345678 Bytes", "2026-04-01 12:34:56 JST"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text %q lacks %q", text, want)
+		}
+	}
+	if strings.Contains(text, "rotating_light") {
+		t.Errorf("resolved text should not use the alarm icon: %q", text)
+	}
+	fired := slack.Text(notification(), time.UTC)
+	if strings.Contains(fired, "resolved") {
+		t.Errorf("fired text should not say resolved: %q", fired)
+	}
+}

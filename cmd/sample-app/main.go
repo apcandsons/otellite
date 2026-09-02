@@ -41,6 +41,7 @@ func main() {
 	service := flag.String("service", "iam-api", "service.name resource attribute")
 	interval := flag.Duration("interval", 5*time.Second, "how often metrics are exported")
 	rps := flag.Float64("rps", 20, "simulated requests per second")
+	burstFor := flag.Duration("burst", 3*time.Minute, "how long a burst (press b) lasts")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -75,13 +76,20 @@ func main() {
 	)
 	defer lp.Shutdown(context.Background())
 
-	sim, err := newSimulator(mp.Meter(scope), lp.Logger(scope))
+	sim, err := newSimulator(mp.Meter(scope), lp.Logger(scope), newBurst(*burstFor))
 	if err != nil {
 		log.Fatalf("instruments: %v", err)
 	}
 
+	restore := rawTerminal()
+	defer restore()
+	keys := make(chan byte)
+	go readKeys(os.Stdin, keys)
+
 	log.Printf("sample-app: exporting %s/%s to http://%s every %s (%.0f rps)", *namespace, *service, *endpoint, *interval, *rps)
-	sim.run(ctx, *rps)
+	log.Printf("sample-app: press b to burst for %s, q to quit", *burstFor)
+	sim.run(ctx, *rps, keys)
+	restore()
 	log.Print("sample-app: shutting down")
 }
 
@@ -96,10 +104,23 @@ type simulator struct {
 
 	memUsed int64
 	start   time.Time
+	burst   *burst
 }
 
-func newSimulator(m metric.Meter, l otellog.Logger) (*simulator, error) {
-	s := &simulator{logger: l, memUsed: 40 << 20, start: time.Now()}
+// During a burst: traffic multiplies, half the requests fail, latency
+// balloons, memory climbs without a GC until it hits a ceiling, and CPU
+// pins near 100%.
+const (
+	burstRPSFactor    = 10
+	burstErrorRate    = 0.5
+	burstLatencyScale = 8.0
+	burstMemPerReq    = 96 << 10
+	burstMemCap       = 512 << 20
+	burstCPU          = 0.92
+)
+
+func newSimulator(m metric.Meter, l otellog.Logger, b *burst) (*simulator, error) {
+	s := &simulator{logger: l, memUsed: 40 << 20, start: time.Now(), burst: b}
 	var err error
 	if s.requests, err = m.Int64Counter("http.server.requests", metric.WithUnit("1"), metric.WithDescription("Total HTTP requests")); err != nil {
 		return nil, err
@@ -137,38 +158,67 @@ func newSimulator(m metric.Meter, l otellog.Logger) (*simulator, error) {
 	return s, err
 }
 
-// cpu follows a slow sine wave with jitter so graphs have some shape.
+// cpu follows a slow sine wave with jitter so graphs have some shape, and
+// pins high during a burst.
 func (s *simulator) cpu() float64 {
+	if s.burst.active(time.Now()) {
+		return math.Min(1, burstCPU+rand.Float64()*0.06)
+	}
 	t := time.Since(s.start).Seconds()
 	v := 0.35 + 0.25*math.Sin(t/60) + rand.Float64()*0.1
 	return math.Max(0, math.Min(1, v))
 }
 
-func (s *simulator) run(ctx context.Context, rps float64) {
-	tick := time.NewTicker(time.Duration(float64(time.Second) / rps))
+// run drives simulated traffic until ctx is cancelled. Keys arriving on
+// keys control it: b starts a burst, q (or Ctrl-C in raw mode) quits.
+func (s *simulator) run(ctx context.Context, rps float64, keys <-chan byte) {
+	interval := time.Duration(float64(time.Second) / rps)
+	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case k := <-keys:
+			switch k {
+			case 'b', 'B':
+				if s.burst.start(time.Now()) {
+					log.Print("Bursting...")
+					tick.Reset(interval / burstRPSFactor)
+				}
+			case 'q', 'Q', 3: // 3 is Ctrl-C, which raw mode no longer turns into SIGINT
+				return
+			}
 		case <-tick.C:
 			s.request(ctx)
+			if s.burst.tick(time.Now()) {
+				log.Print("Ended burst")
+				tick.Reset(interval)
+			}
 		}
 	}
 }
 
 func (s *simulator) request(ctx context.Context) {
+	bursting := s.burst.active(time.Now())
 	route := routes[rand.IntN(len(routes))]
 	status := 200
+	errorRate := 0.02
+	if bursting {
+		errorRate = burstErrorRate
+	}
 	switch r := rand.Float64(); {
-	case r < 0.02:
+	case r < errorRate:
 		status = 500
-	case r < 0.07:
+	case r < errorRate+0.05:
 		status = 404
 	}
 	latency := 5 + rand.ExpFloat64()*40 // ms, long-tailed
 	if route == "/search" {
 		latency *= 3
+	}
+	if bursting {
+		latency *= burstLatencyScale
 	}
 
 	// OTel Lite keys streams by metric name only, so attributes are left
@@ -181,10 +231,16 @@ func (s *simulator) request(ctx context.Context) {
 	}
 	s.inflight.Add(ctx, -1)
 
-	// Memory drifts upward and occasionally "GCs" back down.
-	s.memUsed += int64(rand.IntN(512 << 10))
-	if rand.Float64() < 0.01 {
-		s.memUsed = 40<<20 + int64(rand.IntN(8<<20))
+	// Memory drifts upward and occasionally "GCs" back down. A burst
+	// allocates faster and suppresses GC, so the heap keeps climbing until
+	// the burst ends and the next GC drops it back.
+	if bursting {
+		s.memUsed = min(s.memUsed+burstMemPerReq, burstMemCap)
+	} else {
+		s.memUsed += int64(rand.IntN(512 << 10))
+		if rand.Float64() < 0.01 {
+			s.memUsed = 40<<20 + int64(rand.IntN(8<<20))
+		}
 	}
 
 	s.emitLog(ctx, route, status, latency)

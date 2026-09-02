@@ -58,7 +58,12 @@ func Text(nt domain.Notification, loc *time.Location) string {
 	if nt.Unit != "" {
 		value += " " + nt.Unit
 	}
+	threshold := strconv.FormatFloat(r.Threshold, 'f', -1, 64)
+	at := nt.Time.In(loc).Format(timeLayout)
+	if nt.Event == domain.Resolved {
+		return fmt.Sprintf(":white_check_mark: resolved: %s is no longer %s %s\nlatest: %s at [%s]",
+			r.Stream.Path(), r.Op, threshold, value, at)
+	}
 	return fmt.Sprintf(":rotating_light: %s has been %s %s for %s\nlatest: %s at [%s]",
-		r.Stream.Path(), r.Op, strconv.FormatFloat(r.Threshold, 'f', -1, 64), r.For,
-		value, nt.Time.In(loc).Format(timeLayout))
+		r.Stream.Path(), r.Op, threshold, r.For, value, at)
 }

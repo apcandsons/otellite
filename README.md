@@ -70,6 +70,12 @@ services, e.g. `make run-sample-app SAMPLE_NS=web SAMPLE_SVC=frontend`.
 `alert.sample-app.conf` holds matching alert rules; edit the webhook URL and
 start the SoR with `make run-sor ALERTS=alert.sample-app.conf`.
 
+Press `b` in the sample app's terminal to fake an incident: for 3 minutes
+(`-burst`) traffic goes 10x, half the requests fail, memory climbs to 512 MB
+without a GC, and CPU pins above 0.9. The app prints `Bursting...` and `Ended burst`,
+the memory and CPU rules fire, and each sends a resolved message once the
+burst is over. Press `q` to quit.
+
 ## Alerting
 
 Start the SoR with `make run-sor ALERTS=alert.conf`. The file declares
@@ -84,5 +90,6 @@ alert /iam/iam-api/metrics/go.memory.used.dat > 500000000 for 3m to ops
 ```
 
 Operators: `>`, `>=`, `<`, `<=`. A rule fires once when the condition has
-held continuously for the given duration, and re-arms after the metric
-recovers. Only Slack incoming webhooks are supported.
+held continuously for the given duration. When the metric recovers, a
+"resolved" message is sent to the same channel and the rule re-arms. Only
+Slack incoming webhooks are supported.

@@ -47,28 +47,30 @@ func TestMonitorFiresAfterSustainedBreach(t *testing.T) {
 	steps := []struct {
 		min   int
 		value float64
-		fire  bool
+		want  domain.Event
 	}{
-		{0, 150, false}, // breach starts
-		{2, 150, false}, // not yet 3 minutes
-		{3, 150, true},  // sustained for 3 minutes: fire once
-		{4, 150, false}, // still breached, do not re-fire
-		{5, 50, false},  // recovered
-		{6, 150, false}, // new episode begins
-		{8, 150, false},
-		{9, 150, true},  // fires again for the new episode
-		{9, 100, false}, // exactly threshold is not "over"
+		{0, 150, domain.NoEvent}, // breach starts
+		{2, 150, domain.NoEvent}, // not yet 3 minutes
+		{3, 150, domain.Fired},   // sustained for 3 minutes: fire once
+		{4, 150, domain.NoEvent}, // still breached, do not re-fire
+		{5, 50, domain.Resolved}, // recovered after firing
+		{5, 50, domain.NoEvent},  // still recovered, do not re-resolve
+		{6, 150, domain.NoEvent}, // new episode begins
+		{7, 50, domain.NoEvent},  // short blip that never fired: nothing to resolve
+		{8, 150, domain.NoEvent},
+		{11, 150, domain.Fired},    // fires again for the new episode
+		{11, 100, domain.Resolved}, // exactly threshold is not "over"
 	}
 	for _, s := range steps {
-		if got := m.Observe(at(s.min), s.value); got != s.fire {
-			t.Errorf("at +%dm value %v: fire = %v, want %v", s.min, s.value, got, s.fire)
+		if got := m.Observe(at(s.min), s.value); got != s.want {
+			t.Errorf("at +%dm value %v: event = %v, want %v", s.min, s.value, got, s.want)
 		}
 	}
 }
 
 func TestMonitorZeroForFiresImmediately(t *testing.T) {
 	m := domain.NewMonitor(domain.Rule{Op: domain.OpLess, Threshold: 1})
-	if !m.Observe(time.Now(), 0) {
+	if m.Observe(time.Now(), 0) != domain.Fired {
 		t.Error("should fire on first breach when For is zero")
 	}
 }
