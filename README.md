@@ -213,10 +213,67 @@ that same message is edited to read RESOLVED with both the detection and
 the resolution time. Messages begin with `ALERT:<path>` or
 `RESOLVED:<path>` so Slack keyword notifications can match on either.
 
+Webhook URLs and bot tokens are secrets, so keep them out of the file:
+`${NAME}` anywhere on a channel or alert line is replaced by the
+environment variable `NAME` when the file is loaded. Only the `${...}`
+form expands; a bare `$NAME` is left as written, and comment lines are
+never touched. A reference to an unset variable is an error naming the
+line: `alert.conf line 3: ${SLACK_WEBHOOK_URL} is not set`.
+
+```
+channel ops slack ${SLACK_WEBHOOK_URL}
+alert /${NAMESPACE}/iam-api/metrics/go.memory.used.dat > 500000000 for 3m to ops
+```
+
 `sor -validate -alerts alert.conf` (or `make validate ALERTS=alert.conf`)
-parses the file, prints `N rules, M channels`, and exits 0 without
-starting any listener; a parse error prints the line and exits 1. Run it
-in an image build so a bad rules file fails the build, not the deploy.
+parses the file with the same expansion, prints `N rules, M channels`, and
+exits 0 without starting any listener; a parse error or an unset variable
+prints the line and exits 1. Run it in an image build so a bad rules file
+fails the build, not the deploy. The build has no real secrets, so give
+every reference a placeholder:
+
+```
+SLACK_WEBHOOK_URL=dummy sor -validate -alerts alert.conf
+```
+
+## Health check
+
+`sor -healthcheck` sends `GET http://127.0.0.1:<port>/fs/ls?path=/` to a
+running SoR, where the port comes from `-listen` (`:4318` and `host:port`
+both work; an explicit non-wildcard host is kept), waits at most 2 s, and
+exits 0 on HTTP 200 and 1 on anything else. It starts no listeners, so it
+is the container health command for the same image:
+
+```
+"healthCheck": {"command": ["CMD", "/sor", "-healthcheck"]}   # ECS
+HEALTHCHECK CMD ["/sor", "-healthcheck"]                        # Dockerfile
+```
+
+Pass the same `-listen` as the server when it is not the default.
+
+## Docker
+
+`sor` is a static Go binary with no runtime dependencies, and both the
+build-time check (`-validate`) and the health probe (`-healthcheck`) are
+flags on that binary. The image therefore needs no shell, no `curl`, and
+no `envsubst`; `gcr.io/distroless/static-debian12:nonroot` is enough:
+
+```dockerfile
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /sor ./cmd/sor
+RUN SLACK_WEBHOOK_URL=dummy /sor -validate -alerts alert.conf
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /sor /sor
+COPY alert.conf /alert.conf
+HEALTHCHECK CMD ["/sor", "-healthcheck"]
+ENTRYPOINT ["/sor", "-alerts", "/alert.conf"]
+```
+
+The real `SLACK_WEBHOOK_URL` arrives as a container environment variable
+(an ECS secret, for instance) and is expanded when `sor` starts.
 
 ## Web dashboard
 
