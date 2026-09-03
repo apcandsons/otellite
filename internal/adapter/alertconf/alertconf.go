@@ -10,7 +10,9 @@
 // posts through the Web API with a bot token (chat:write scope), which
 // also lets a resolved alert edit its original message.
 //
-// Blank lines and lines starting with # are ignored.
+// Blank lines and lines starting with # are ignored. Elsewhere, ${NAME}
+// expands to the environment variable NAME (see ParseEnv); a bare $NAME is
+// left as written.
 package alertconf
 
 import (
@@ -18,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -41,28 +44,44 @@ type Config struct {
 	Rules    []domain.Rule
 }
 
-// Load parses the file at path.
+// Load parses the file at path, expanding ${NAME} references from the
+// process environment.
 func Load(path string) (Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, err
 	}
 	defer f.Close()
-	return Parse(f)
+	return ParseEnv(f, os.LookupEnv)
 }
 
-// Parse reads a config from r. Rules may only reference channels declared
-// earlier in the file.
+// Parse reads a config from r without expanding ${NAME} references. Rules
+// may only reference channels declared earlier in the file.
 func Parse(r io.Reader) (Config, error) {
+	return ParseEnv(r, nil)
+}
+
+// ParseEnv is Parse with ${NAME} expansion: before a line is tokenised,
+// every ${NAME} is replaced by lookup(NAME), and a name lookup does not
+// know is an error naming the line. A nil lookup disables expansion.
+// Comment lines are never expanded.
+func ParseEnv(r io.Reader, lookup func(string) (string, bool)) (Config, error) {
 	var cfg Config
 	seen := map[string]bool{}
 	sc := bufio.NewScanner(r)
 	for n := 1; sc.Scan(); n++ {
-		fields := strings.Fields(sc.Text())
-		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		var err error
+		line, err := expand(line, lookup)
+		if err != nil {
+			return Config{}, fmt.Errorf("alert.conf line %d: %w", n, err)
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
 		switch fields[0] {
 		case "channel":
 			var ch Channel
@@ -94,6 +113,28 @@ func Parse(r io.Reader) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+var envRef = regexp.MustCompile(`\$\{([^}]*)\}`)
+
+// expand replaces every ${NAME} in line using lookup. A nil lookup returns
+// the line unchanged.
+func expand(line string, lookup func(string) (string, bool)) (string, error) {
+	if lookup == nil {
+		return line, nil
+	}
+	var missing string
+	out := envRef.ReplaceAllStringFunc(line, func(ref string) string {
+		v, ok := lookup(ref[2 : len(ref)-1])
+		if !ok && missing == "" {
+			missing = ref
+		}
+		return v
+	})
+	if missing != "" {
+		return "", fmt.Errorf("%s is not set", missing)
+	}
+	return out, nil
 }
 
 const channelUsage = "want: channel <name> slack <webhook-url>, or channel <name> slack-bot <bot-token> <channel-id>"
