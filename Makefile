@@ -22,8 +22,11 @@ SAMPLE_RPS  ?= 20
 SAMPLE_CONF ?=
 WEBUI_PORT  ?= 8080
 SOR_GRPC    ?= http://localhost$(GRPC)
+BASE_PATH   ?=
+WEBUI_TOKEN ?=
+COOKIE_SECURE ?=
 
-.PHONY: all build sor cli sample-app test test-race test-one vet fmt tidy check proto run-sor run-cli run-sample-app webui webui-test run-webui clean help
+.PHONY: all build sor cli sample-app test test-race test-one vet fmt tidy check proto run-sor validate run-cli run-sample-app webui webui-test run-webui clean help
 
 all: build ## Build both binaries (default)
 
@@ -66,6 +69,10 @@ proto: webui ## Regenerate Go and TypeScript from proto/ (needs buf, protoc-gen-
 run-sor: sor ## Run the system of record
 	$(SOR) -listen $(LISTEN) -grpc $(GRPC) -retention $(RETENTION) -max-samples $(MAX_SAMPLES) $(if $(ALERTS),-alerts $(ALERTS))
 
+validate: sor ## Check ALERTS parses without starting the SoR
+	@test -n "$(ALERTS)" || { echo "ALERTS is required"; exit 2; }
+	$(SOR) -validate -alerts $(ALERTS)
+
 run-cli: cli ## Run the CLI against SOR_URL
 	$(CLI) -sor $(SOR_URL)
 
@@ -80,8 +87,8 @@ webui/node_modules: webui/package.json
 webui-test: webui ## Typecheck and test the web UI
 	cd webui && npm run typecheck && npm test
 
-run-webui: webui ## Run the web dashboard against SOR_GRPC on WEBUI_PORT
-	cd webui && PORT=$(WEBUI_PORT) SOR_GRPC=$(SOR_GRPC) npm start
+run-webui: webui ## Run the web dashboard against SOR_GRPC on WEBUI_PORT (BASE_PATH, WEBUI_TOKEN, COOKIE_SECURE pass through if set)
+	cd webui && PORT=$(WEBUI_PORT) SOR_GRPC=$(SOR_GRPC) $(if $(BASE_PATH),BASE_PATH=$(BASE_PATH)) $(if $(WEBUI_TOKEN),WEBUI_TOKEN=$(WEBUI_TOKEN)) $(if $(COOKIE_SECURE),COOKIE_SECURE=$(COOKIE_SECURE)) npm start
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR)

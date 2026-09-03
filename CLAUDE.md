@@ -63,4 +63,7 @@ cmd/cli/            main for the CLI
 internal/domain/    entities: namespace, service, signal stream, sample; retention rules
 internal/usecase/   ingest, evict, browse (ls/cd/cat) use cases
 internal/adapter/   OTel receiver, in-memory store, CLI transport/protocol
+client/             public bootstrap library for Go services (may import the OTel SDK);
+                    a leaf: nothing under internal/ may import it
+client/clienttest/  test double: the real receiver on an httptest server
 ```

@@ -95,6 +95,82 @@ burst is over. With several services, `b` bursts all of them and `1`-`9`
 burst one. `p` pauses and resumes the memory and CPU gauges, so their
 streams go absent and the `absent` rules fire. Press `q` to quit.
 
+## Instrumenting a Go service
+
+`github.com/apcandsons/otellite/client` is the bootstrap for real
+services: one call wires metrics and logs to the SoR from the standard
+OpenTelemetry environment, and the rest of the package is thin helpers.
+
+```go
+import "github.com/apcandsons/otellite/client"
+
+func main() {
+    ctx := context.Background()
+    shutdown, err := client.Start(ctx, client.Options{}) // reads OTEL_* below
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer shutdown(ctx)
+
+    denies, _ := client.NewCounterSet("authz.deny", "no_grant", "explicit_deny")
+    denies.Add(ctx, "no_grant", 1)
+    client.Gauge("sync.lag", "1", "sequence gap to the source", func() float64 { return lag() })
+
+    http.ListenAndServe(":8080", client.HTTPMiddleware(mux))
+    // or: grpc.NewServer(grpc.ChainUnaryInterceptor(client.UnaryServerInterceptor()))
+}
+```
+
+The contract is environment only, so the same binary runs anywhere:
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://sor.otel.staging.internal:4318   # unset: telemetry off
+OTEL_SERVICE_NAME=iam-api                                            # /<namespace>/iam-api/...
+OTEL_RESOURCE_ATTRIBUTES=service.namespace=iam,deployment.environment=staging
+OTEL_METRIC_EXPORT_INTERVAL=60000                                    # ms, default 60 s
+```
+
+Without an endpoint `Start` only installs the slog fan-out (secrets still
+redacted) and returns a no-op shutdown. With one, every service gets the
+common set for free: `process.cpu.utilization`, `go.memory.used`,
+`go.goroutines`, `process.uptime` (a heartbeat for `absent` rules), plus
+`http.server.{requests,errors,duration,active_requests,bytes_in,bytes_out}`
+from `HTTPMiddleware` and `rpc.server.{requests,errors,client_errors,
+duration,active}` from the gRPC interceptors. `UnaryClientInterceptor("mkms")`
+reports an outbound hop as `mkms.{requests,errors,duration}`.
+
+Counters and histograms export with delta temporality every 60 s, so a
+counter sample is literally "events in the last minute" and a threshold
+alert on it resolves once the trouble passes. Histograms surface as
+`<name>.count` and `<name>.sum`.
+
+The SoR keys streams by instrument name only and drops attributes, so
+never put a dimension in an attribute. Give each value its own instrument
+instead, which is what `NewCounterSet` is for: `authz.deny.no_grant.dat`
+and `authz.deny.explicit_deny.dat` are two files you can `cat` and alert
+on; `authz.deny{reason=...}` would be one file with the reasons lost.
+
+Logs: `Start` replaces slog's default with a fan-out to your own handler
+and an OTLP bridge, and routes the standard `log` package through it at
+INFO. Values whose key (or `group.key` path) matches `Options.Redact`
+(default `password|secret|token|authorization|cookie|key`) become
+`[REDACTED]` on both sinks. The SoR keeps severity and body only, so
+attributes are rendered into the body as `msg k=v k=v`. The log stream is
+named after the scope (`Options.Scope`, else `OTEL_SERVICE_NAME`) with `/`
+replaced by `-`, since stream names are path segments:
+`/iam/iam-api/logs/iam-api.dat`.
+
+For a wiring test, `client/clienttest` starts the real receiver on an
+`httptest` server:
+
+```go
+rcv := clienttest.NewReceiver(t)
+shutdown, _ := client.Start(ctx, client.Options{Endpoint: rcv.URL(), Interval: 20 * time.Millisecond})
+// ... exercise the code, then
+shutdown(ctx)
+rcv.Streams() // ["/iam/iam-api/metrics/authz.deny.no_grant.dat", ...]
+```
+
 ## Alerting
 
 Start the SoR with `make run-sor ALERTS=alert.conf`. The file declares
@@ -137,6 +213,11 @@ that same message is edited to read RESOLVED with both the detection and
 the resolution time. Messages begin with `ALERT:<path>` or
 `RESOLVED:<path>` so Slack keyword notifications can match on either.
 
+`sor -validate -alerts alert.conf` (or `make validate ALERTS=alert.conf`)
+parses the file, prints `N rules, M channels`, and exits 0 without
+starting any listener; a parse error prints the line and exits 1. Run it
+in an image build so a bad rules file fails the build, not the deploy.
+
 ## Web dashboard
 
 `webui/` is a small [Hono](https://hono.dev) server that talks to the SoR
@@ -168,4 +249,28 @@ relays samples and alert transitions to browsers over server-sent events.
 
 The gRPC contract lives in `proto/otellite/v1/sor.proto`; `make proto`
 regenerates both the Go server stubs and the TypeScript client.
+
+### Running behind a reverse proxy
+
+The dashboard can mount under a prefix and gate itself, for when the
+proxy in front of it is public:
+
+```
+BASE_PATH=/otellite WEBUI_TOKEN=$(openssl rand -base64 32) make run-webui
+```
+
+- `BASE_PATH` (default empty) mounts every route under the prefix, so the
+  proxy forwards `/otellite/*` unchanged. Pages, `app.js`, the SSE feed
+  and the fragments the pages fetch (`/_/detail/*`, `/_/history/*`) all
+  live under it. `GET <base>/healthz` answers `ok` without a session.
+- `WEBUI_TOKEN` (default empty) turns on login. Empty means no
+  authentication at all, and the server says so loudly at start. With a
+  token set, a browser without a session is redirected to
+  `<base>/login`, where the token is exchanged for an `otellite_session`
+  cookie (`HttpOnly; SameSite=Lax; Path=<base>; Secure; Max-Age=30d`,
+  holding an HMAC of the token, not the token). Scripts and probes can
+  send `Authorization: Bearer <token>` instead. Anything else without
+  credentials gets a 401.
+- `COOKIE_SECURE=false` drops the `Secure` attribute for plain-http
+  development.
 
