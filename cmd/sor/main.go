@@ -6,9 +6,11 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"google.golang.org/grpc"
@@ -31,7 +33,18 @@ func main() {
 	evictEvery := flag.Duration("evict-every", 30*time.Second, "how often the retention window is applied")
 	alerts := flag.String("alerts", "", "path to alert.conf (no alerting when empty)")
 	checkEvery := flag.Duration("check-every", time.Second, "how often absent rules are evaluated")
+	validate := flag.Bool("validate", false, "parse -alerts, print the rule and channel counts, and exit without serving")
 	flag.Parse()
+
+	if *validate {
+		summary, err := validateAlerts(*alerts)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(summary)
+		return
+	}
 
 	store := memstore.New()
 	ingester := usecase.NewIngester(store, domain.Budget{MaxSamples: *maxSamples})
