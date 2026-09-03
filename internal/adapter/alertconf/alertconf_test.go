@@ -1,6 +1,8 @@
 package alertconf_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +98,111 @@ alert /iam/iam-api/metrics/process.cpu.utilization.dat absent for 30s to ops
 		if _, err := alertconf.Parse(strings.NewReader("channel ops slack https://example.com/hook\n" + bad)); err == nil {
 			t.Errorf("%q: expected error", bad)
 		}
+	}
+}
+
+func envOf(m map[string]string) func(string) (string, bool) {
+	return func(k string) (string, bool) { v, ok := m[k]; return v, ok }
+}
+
+func TestParseEnvExpandsChannelLine(t *testing.T) {
+	env := envOf(map[string]string{"SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/T000/B000/a=b&c=d"})
+	cfg, err := alertconf.ParseEnv(strings.NewReader("channel ops slack ${SLACK_WEBHOOK_URL}\n"), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Channels) != 1 || cfg.Channels[0].URL != "https://hooks.slack.com/services/T000/B000/a=b&c=d" {
+		t.Errorf("channels = %+v", cfg.Channels)
+	}
+}
+
+func TestParseEnvExpandsInsideRulePath(t *testing.T) {
+	env := envOf(map[string]string{"NS": "iam", "SVC": "iam-api", "LIMIT": "500"})
+	cfg, err := alertconf.ParseEnv(strings.NewReader(`
+channel ops slack https://example.com/hook
+alert /${NS}/${SVC}/metrics/go.memory.used.dat > ${LIMIT} for 3m to ops
+`), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Rules) != 1 {
+		t.Fatalf("rules = %+v", cfg.Rules)
+	}
+	r := cfg.Rules[0]
+	if r.Stream.Namespace != "iam" || r.Stream.Service != "iam-api" || r.Threshold != 500 {
+		t.Errorf("rule = %+v", r)
+	}
+}
+
+func TestParseEnvUnsetVariableNamesVariableAndLine(t *testing.T) {
+	src := "# comment\nchannel ops slack https://example.com/hook\nchannel oncall slack ${SLACK_WEBHOOK_URL}\n"
+	_, err := alertconf.ParseEnv(strings.NewReader(src), envOf(nil))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Error() != "alert.conf line 3: ${SLACK_WEBHOOK_URL} is not set" {
+		t.Errorf("err = %q", err)
+	}
+}
+
+func TestParseEnvLeavesBareDollarAlone(t *testing.T) {
+	env := envOf(map[string]string{"X": "expanded"})
+	cfg, err := alertconf.ParseEnv(strings.NewReader("channel ops slack https://example.com/$X/${X}\n"), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Channels[0].URL != "https://example.com/$X/expanded" {
+		t.Errorf("url = %q", cfg.Channels[0].URL)
+	}
+}
+
+func TestParseEnvLiteralTextUnchanged(t *testing.T) {
+	lookup := func(string) (string, bool) { t.Error("lookup called without a reference"); return "", false }
+	cfg, err := alertconf.ParseEnv(strings.NewReader(good), lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := alertconf.Parse(strings.NewReader(good))
+	if len(cfg.Channels) != len(want.Channels) || cfg.Channels[0] != want.Channels[0] || len(cfg.Rules) != len(want.Rules) || cfg.Rules[0] != want.Rules[0] {
+		t.Errorf("got %+v, want %+v", cfg, want)
+	}
+}
+
+func TestParseEnvSkipsComments(t *testing.T) {
+	src := "# set ${NOT_A_VAR} before running\nchannel ops slack https://example.com/hook\n"
+	if _, err := alertconf.ParseEnv(strings.NewReader(src), envOf(nil)); err != nil {
+		t.Errorf("comment should not be expanded: %v", err)
+	}
+}
+
+func TestParseWithoutLookupDoesNotExpand(t *testing.T) {
+	cfg, err := alertconf.Parse(strings.NewReader("channel ops slack ${SLACK_WEBHOOK_URL}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Channels[0].URL != "${SLACK_WEBHOOK_URL}" {
+		t.Errorf("url = %q", cfg.Channels[0].URL)
+	}
+}
+
+func TestLoadExpandsFromProcessEnvironment(t *testing.T) {
+	t.Setenv("OTELLITE_TEST_HOOK", "https://example.com/from-env")
+	p := filepath.Join(t.TempDir(), "alert.conf")
+	if err := os.WriteFile(p, []byte("channel ops slack ${OTELLITE_TEST_HOOK}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := alertconf.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Channels[0].URL != "https://example.com/from-env" {
+		t.Errorf("url = %q", cfg.Channels[0].URL)
+	}
+	if err := os.WriteFile(p, []byte("channel ops slack ${OTELLITE_TEST_UNSET}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alertconf.Load(p); err == nil || !strings.Contains(err.Error(), "${OTELLITE_TEST_UNSET} is not set") {
+		t.Errorf("err = %v", err)
 	}
 }
 
