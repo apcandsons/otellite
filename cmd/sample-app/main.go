@@ -26,9 +26,10 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+
+	"github.com/apcandsons/otellite/client"
 )
 
 // scope names the instrumentation scope. OTel Lite names log streams after
@@ -124,7 +125,7 @@ func startService(ctx context.Context, endpoint string, sc serviceConfig, interv
 	metricExp, err := otlpmetrichttp.New(ctx,
 		otlpmetrichttp.WithEndpoint(endpoint),
 		otlpmetrichttp.WithInsecure(),
-		otlpmetrichttp.WithTemporalitySelector(temporality),
+		otlpmetrichttp.WithTemporalitySelector(client.Temporality),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("metric exporter: %w", err)
@@ -199,18 +200,6 @@ const (
 	blipMaxGap      = 120 * time.Second
 	normalErrorRate = 0.02
 )
-
-// temporality makes request and error counters (and the latency histogram)
-// export the count since the previous export instead of a lifetime total,
-// so they fall back once trouble passes and threshold alerts can resolve.
-// Everything else stays cumulative.
-func temporality(kind sdkmetric.InstrumentKind) metricdata.Temporality {
-	switch kind {
-	case sdkmetric.InstrumentKindCounter, sdkmetric.InstrumentKindHistogram:
-		return metricdata.DeltaTemporality
-	}
-	return metricdata.CumulativeTemporality
-}
 
 // pace is how the request loop should run right now.
 type pace int
