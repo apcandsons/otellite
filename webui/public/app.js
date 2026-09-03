@@ -4,6 +4,8 @@
 (function () {
   "use strict";
   var SPARK_W = 120, SPARK_H = 24, SPARK_N = 60;
+  // Mount point when served behind a reverse proxy ("" at the root).
+  var BASE = document.body.dataset.base || "";
   var SEV = ["red", "amber", "green", "unknown"];
 
   function fmtBytes(n) {
@@ -86,7 +88,7 @@
       chartTimer = null;
       var chart = document.getElementById("chart");
       if (!chart || !detail) return;
-      fetch("/api/history" + pagePath(detail))
+      fetch(BASE + "/_/history" + pagePath(detail))
         .then(function (r) { return r.ok ? r.text() : null; })
         .then(function (html) { if (html !== null && detail) chart.innerHTML = html; })
         .catch(function () {});
@@ -104,15 +106,17 @@
   var modalBody = modal && modal.querySelector(".body");
   var modalOpenPage = modal && modal.querySelector(".open-page");
 
+  // href is the page link (under BASE); rel is the app-relative part.
   function openModal(href) {
     if (!modal) return;
-    var path = href.replace(/^\/history\/([^/]+)\/([^/]+)\/(.+)$/, "/$1/$2/metrics/$3.dat");
+    var rel = href.slice(BASE.length);
+    var path = rel.replace(/^\/history\/([^/]+)\/([^/]+)\/(.+)$/, "/$1/$2/metrics/$3.dat");
     detail = path;
     modalBody.innerHTML = "";
     modalOpenPage.href = href;
     modal.hidden = false;
     document.body.style.overflow = "hidden";
-    fetch("/api/detail" + href.slice("/history".length))
+    fetch(BASE + "/_/detail" + rel.slice("/history".length))
       .then(function (r) { return r.ok ? r.text() : "<p class=\"empty\">not found</p>"; })
       .then(function (html) { if (detail === path) modalBody.innerHTML = html; })
       .catch(function () { modalBody.innerHTML = "<p class=\"empty\">could not load</p>"; });
@@ -130,7 +134,7 @@
 
   if (modal) {
     document.addEventListener("click", function (e) {
-      var a = e.target.closest && e.target.closest('a[href^="/history/"]');
+      var a = e.target.closest && e.target.closest('a[href^="' + BASE + '/history/"]');
       if (!a || a.classList.contains("open-page")) return;
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; // let new-tab clicks through
       e.preventDefault();
@@ -154,7 +158,7 @@
   }
 
   var conn = document.getElementById("conn");
-  var es = new EventSource("/events");
+  var es = new EventSource(BASE + "/events");
   es.addEventListener("update", function (e) {
     try { handle(JSON.parse(e.data)); } catch (err) { console.error(err); }
   });

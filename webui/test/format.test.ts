@@ -63,3 +63,12 @@ describe("bytes", () => {
     expect(fmtRule({ path: "/a/b/metrics/c.dat", op: "absent", threshold: 0, holdForSeconds: 30, channel: "ops" })).toBe("absent for 30s");
   });
 });
+
+describe("historyHref", () => {
+  it("is root-relative by default and prefixed under a base path", async () => {
+    const { historyHref } = await import("../src/format.js");
+    const k = { namespace: "iam", service: "iam-api", name: "go.memory.used" };
+    expect(historyHref(k)).toBe("/history/iam/iam-api/go.memory.used");
+    expect(historyHref(k, "/otellite")).toBe("/otellite/history/iam/iam-api/go.memory.used");
+  });
+});

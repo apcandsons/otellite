@@ -42,9 +42,9 @@ export function fmtTime(ms: number): string {
   return new Date(ms).toLocaleString("sv-SE", { timeZoneName: "short" });
 }
 
-/** History page location for a KPI. */
-export function historyHref(k: { namespace: string; service: string; name: string }): string {
-  return `/history/${k.namespace}/${k.service}/${k.name}`;
+/** History page location for a KPI, under the app's base path. */
+export function historyHref(k: { namespace: string; service: string; name: string }, base = ""): string {
+  return `${base}/history/${k.namespace}/${k.service}/${k.name}`;
 }
 
 /** Compact axis label: 4 significant digits with k / M / G suffixes. */
