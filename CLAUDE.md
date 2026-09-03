@@ -32,10 +32,10 @@ Example: `/iam/iam-api/metrics/go.memory.used.dat`
 The CLI connects to the SoR and supports shell-style navigation commands: `ls`, `cd`, `cat`. `cat` on a `.dat` file prints one sample per line, oldest first:
 
 ```
-[2026-04-01 12:34:56 JST] 43122688 Bytes
+[2026-04-01 12:34:56 JST] 41.1 MB
 ```
 
-Format: bracketed local timestamp with zone, value, unit. Keep new CLI commands consistent with this filesystem metaphor rather than adding query-language-style flags.
+Format: bracketed local timestamp with zone, value, unit. Byte counts are shown as KB / MB / GB (base 1024). Keep new CLI commands consistent with this filesystem metaphor rather than adding query-language-style flags.
 
 ## Language and toolchain
 

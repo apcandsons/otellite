@@ -105,3 +105,61 @@ func TestAlerterNotifiesResolvedAfterRecovery(t *testing.T) {
 		t.Errorf("resolved = %+v", r)
 	}
 }
+
+func TestAlerterReportsRuleStatus(t *testing.T) {
+	memRule := domain.Rule{Stream: memID, Op: domain.OpGreater, Threshold: 100, Channel: "ops"}
+	webRule := domain.Rule{Stream: webID, Op: domain.OpLess, Threshold: 1, For: time.Hour, Channel: "ops"}
+	al := usecase.NewAlerter([]domain.Rule{memRule, webRule}, &fakeNotifier{})
+
+	al.Observe(memID, domain.Sample{Time: t0, Value: "150"})
+	al.Observe(webID, domain.Sample{Time: t0, Value: "0"})
+
+	got := al.Status()
+	want := []usecase.RuleStatus{{Rule: memRule, Firing: true}, {Rule: webRule, Firing: false}}
+	if len(got) != len(want) {
+		t.Fatalf("status = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("status[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestAlerterCheckFiresAbsentRulesAndSamplesResolveThem(t *testing.T) {
+	nf := &fakeNotifier{}
+	absent := domain.Rule{Stream: memID, Op: domain.OpAbsent, For: 30 * time.Second, Channel: "ops"}
+	threshold := domain.Rule{Stream: webID, Op: domain.OpGreater, Threshold: 1, Channel: "ops"}
+	al := usecase.NewAlerter([]domain.Rule{absent, threshold}, nf)
+	at := func(sec int) time.Time { return t0.Add(time.Duration(sec) * time.Second) }
+
+	if err := al.Check(at(0)); err != nil || len(nf.sent) != 0 {
+		t.Fatalf("first check: err=%v sent=%+v", err, nf.sent)
+	}
+	al.Observe(memID, domain.Sample{Time: at(5), Value: "1"})
+	al.Check(at(34))
+	if len(nf.sent) != 0 {
+		t.Fatalf("29s of silence should not fire: %+v", nf.sent)
+	}
+	al.Check(at(35))
+	if len(nf.sent) != 1 || nf.sent[0].Rule != absent || nf.sent[0].Event != domain.Fired || !nf.sent[0].Time.Equal(at(35)) || nf.sent[0].Value != "" {
+		t.Fatalf("after 30s silence: %+v", nf.sent)
+	}
+	if st := al.Status(); !st[0].Firing || st[1].Firing {
+		t.Errorf("status = %+v", st)
+	}
+	al.Observe(memID, domain.Sample{Time: at(40), Value: "2", Unit: "By"})
+	if len(nf.sent) != 2 || nf.sent[1].Event != domain.Resolved || nf.sent[1].Value != "2" {
+		t.Fatalf("sample should resolve: %+v", nf.sent)
+	}
+}
+
+func TestAlerterCheckReturnsNotifierError(t *testing.T) {
+	boom := errors.New("down")
+	nf := &fakeNotifier{err: boom}
+	al := usecase.NewAlerter([]domain.Rule{{Stream: memID, Op: domain.OpAbsent, For: time.Second}}, nf)
+	al.Check(t0)
+	if err := al.Check(t0.Add(time.Second)); !errors.Is(err, boom) {
+		t.Errorf("err = %v", err)
+	}
+}

@@ -2,7 +2,13 @@
 // notification channels and threshold rules:
 //
 //	channel <name> slack <webhook-url>
+//	channel <name> slack-bot <bot-token> <channel-id>
 //	alert <path> <op> <threshold> for <duration> to <channel>
+//	alert <path> absent for <duration> to <channel>
+//
+// A slack channel posts through an incoming webhook. A slack-bot channel
+// posts through the Web API with a bot token (chat:write scope), which
+// also lets a resolved alert edit its original message.
 //
 // Blank lines and lines starting with # are ignored.
 package alertconf
@@ -19,28 +25,20 @@ import (
 	"github.com/apcandsons/otellite/internal/domain"
 )
 
-// Channel is a named destination for notifications.
+// Channel is a named destination for notifications. URL is set for the
+// slack type; Token and ChannelID for slack-bot.
 type Channel struct {
-	Name string
-	Type string
-	URL  string
+	Name      string
+	Type      string
+	URL       string
+	Token     string
+	ChannelID string
 }
 
 // Config is the parsed file.
 type Config struct {
 	Channels []Channel
 	Rules    []domain.Rule
-}
-
-// SlackWebhooks returns channel name -> webhook URL for every slack channel.
-func (c Config) SlackWebhooks() map[string]string {
-	out := map[string]string{}
-	for _, ch := range c.Channels {
-		if ch.Type == "slack" {
-			out[ch.Name] = ch.URL
-		}
-	}
-	return out
 }
 
 // Load parses the file at path.
@@ -98,19 +96,37 @@ func Parse(r io.Reader) (Config, error) {
 	return cfg, nil
 }
 
+const channelUsage = "want: channel <name> slack <webhook-url>, or channel <name> slack-bot <bot-token> <channel-id>"
+
 func parseChannel(args []string) (Channel, error) {
-	if len(args) != 3 {
-		return Channel{}, fmt.Errorf("want: channel <name> slack <webhook-url>")
+	if len(args) < 2 {
+		return Channel{}, fmt.Errorf("%s", channelUsage)
 	}
-	if args[1] != "slack" {
-		return Channel{}, fmt.Errorf("unsupported channel type %q (only slack)", args[1])
+	switch args[1] {
+	case "slack":
+		if len(args) != 3 {
+			return Channel{}, fmt.Errorf("%s", channelUsage)
+		}
+		return Channel{Name: args[0], Type: args[1], URL: args[2]}, nil
+	case "slack-bot":
+		if len(args) != 4 {
+			return Channel{}, fmt.Errorf("%s", channelUsage)
+		}
+		return Channel{Name: args[0], Type: args[1], Token: args[2], ChannelID: args[3]}, nil
 	}
-	return Channel{Name: args[0], Type: args[1], URL: args[2]}, nil
+	return Channel{}, fmt.Errorf("unsupported channel type %q (want slack or slack-bot)", args[1])
 }
 
+const alertUsage = "want: alert <path> <op> <threshold> for <duration> to <channel>, or alert <path> absent for <duration> to <channel>"
+
 func parseAlert(args []string) (domain.Rule, error) {
+	// The absent form has no threshold: splice a placeholder in so both
+	// forms share one shape: path op threshold for duration to channel.
+	if len(args) >= 2 && args[1] == "absent" {
+		args = append([]string{args[0], args[1], "0"}, args[2:]...)
+	}
 	if len(args) != 7 || args[3] != "for" || args[5] != "to" {
-		return domain.Rule{}, fmt.Errorf("want: alert <path> <op> <threshold> for <duration> to <channel>")
+		return domain.Rule{}, fmt.Errorf("%s", alertUsage)
 	}
 	p, err := domain.ParsePath(args[0])
 	if err != nil {
@@ -121,7 +137,7 @@ func parseAlert(args []string) (domain.Rule, error) {
 	}
 	op, ok := domain.ParseOp(args[1])
 	if !ok {
-		return domain.Rule{}, fmt.Errorf("bad comparison %q (want >, >=, <, <=)", args[1])
+		return domain.Rule{}, fmt.Errorf("bad comparison %q (want >, >=, <, <=, absent)", args[1])
 	}
 	threshold, err := strconv.ParseFloat(args[2], 64)
 	if err != nil {

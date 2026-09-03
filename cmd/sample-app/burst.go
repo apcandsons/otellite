@@ -16,14 +16,19 @@ type burst struct {
 
 func newBurst(d time.Duration) *burst { return &burst{duration: d} }
 
-// start begins a burst at now. It reports false if one is already running.
-func (b *burst) start(now time.Time) bool {
+// start begins a burst of the default duration at now. It reports false
+// if one is already running.
+func (b *burst) start(now time.Time) bool { return b.startFor(now, b.duration) }
+
+// startFor begins a burst lasting d. It reports false if one is already
+// running.
+func (b *burst) startFor(now time.Time, d time.Duration) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.until.IsZero() && now.Before(b.until) {
 		return false
 	}
-	b.until = now.Add(b.duration)
+	b.until = now.Add(d)
 	return true
 }
 

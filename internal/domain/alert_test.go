@@ -74,3 +74,83 @@ func TestMonitorZeroForFiresImmediately(t *testing.T) {
 		t.Error("should fire on first breach when For is zero")
 	}
 }
+
+func TestMonitorReportsFiringState(t *testing.T) {
+	m := domain.NewMonitor(domain.Rule{Op: domain.OpGreater, Threshold: 1, For: time.Minute})
+	t0 := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	if m.Firing() {
+		t.Fatal("new monitor should not be firing")
+	}
+	m.Observe(t0, 5)
+	if m.Firing() {
+		t.Error("breach shorter than For should not be firing")
+	}
+	m.Observe(t0.Add(time.Minute), 5)
+	if !m.Firing() {
+		t.Error("should be firing after sustained breach")
+	}
+	m.Observe(t0.Add(2*time.Minute), 0)
+	if m.Firing() {
+		t.Error("should stop firing after recovery")
+	}
+}
+
+func TestAbsentOpParsesAndNeverHolds(t *testing.T) {
+	op, ok := domain.ParseOp("absent")
+	if !ok || op != domain.OpAbsent || op.String() != "absent" {
+		t.Fatalf("ParseOp(absent) = %v %v", op, ok)
+	}
+	if op.Holds(1, 0) {
+		t.Error("absent must not hold on any value")
+	}
+}
+
+func TestAbsentMonitorFiresOnSilenceAndResolvesOnSample(t *testing.T) {
+	m := domain.NewMonitor(domain.Rule{Op: domain.OpAbsent, For: 30 * time.Second})
+	t0 := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	at := func(sec int) time.Time { return t0.Add(time.Duration(sec) * time.Second) }
+
+	if got := m.Check(at(0)); got != domain.NoEvent { // first check arms the clock
+		t.Errorf("check at +0 = %v", got)
+	}
+	if got := m.Observe(at(10), 0.5); got != domain.NoEvent {
+		t.Errorf("observe at +10 = %v", got)
+	}
+	if got := m.Check(at(39)); got != domain.NoEvent { // 29s since last sample
+		t.Errorf("check at +39 = %v", got)
+	}
+	if got := m.Check(at(40)); got != domain.Fired {
+		t.Errorf("check at +40 = %v, want Fired", got)
+	}
+	if got := m.Check(at(50)); got != domain.NoEvent { // fires once
+		t.Errorf("check at +50 = %v", got)
+	}
+	if !m.Firing() {
+		t.Error("should be firing")
+	}
+	if got := m.Observe(at(60), 0.5); got != domain.Resolved {
+		t.Errorf("observe at +60 = %v, want Resolved", got)
+	}
+	if got := m.Check(at(89)); got != domain.NoEvent {
+		t.Errorf("check at +89 = %v", got)
+	}
+	if got := m.Check(at(90)); got != domain.Fired { // re-arms for a new silence
+		t.Errorf("check at +90 = %v, want Fired", got)
+	}
+}
+
+func TestAbsentMonitorFiresIfStreamNeverReports(t *testing.T) {
+	m := domain.NewMonitor(domain.Rule{Op: domain.OpAbsent, For: time.Minute})
+	t0 := time.Now()
+	m.Check(t0)
+	if m.Check(t0.Add(time.Minute)) != domain.Fired {
+		t.Error("should fire one For after the first check when nothing ever arrives")
+	}
+}
+
+func TestThresholdMonitorIgnoresCheck(t *testing.T) {
+	m := domain.NewMonitor(domain.Rule{Op: domain.OpGreater, Threshold: 1, For: time.Second})
+	if m.Check(time.Now().Add(time.Hour)) != domain.NoEvent {
+		t.Error("threshold rules are driven by samples only")
+	}
+}

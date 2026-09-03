@@ -1,0 +1,88 @@
+// The gRPC face of the OTel Lite system of record: the same ls/cat browse
+// the CLI uses, the alert rules with their current state, and a live feed.
+syntax = "proto3";
+
+package otellite.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/apcandsons/otellite/internal/adapter/grpcapi/pb/otellite/v1;sorv1";
+
+service SoRService {
+  // Ls lists a directory of the virtual filesystem.
+  rpc Ls(LsRequest) returns (LsResponse);
+  // Cat returns every sample of one stream, oldest first.
+  rpc Cat(CatRequest) returns (CatResponse);
+  // Rules returns the configured alert rules and whether each is firing.
+  rpc Rules(RulesRequest) returns (RulesResponse);
+  // Watch streams samples as they are ingested and alert transitions as
+  // they happen. Slow clients miss events rather than slowing ingestion.
+  rpc Watch(WatchRequest) returns (stream WatchResponse);
+}
+
+message LsRequest {
+  string path = 1;
+}
+
+message Entry {
+  string name = 1;
+  bool dir = 2;
+}
+
+message LsResponse {
+  repeated Entry entries = 1;
+}
+
+message CatRequest {
+  string path = 1;
+}
+
+message Sample {
+  google.protobuf.Timestamp time = 1;
+  string value = 2;
+  string unit = 3;
+}
+
+message CatResponse {
+  repeated Sample samples = 1;
+}
+
+message RulesRequest {}
+
+message Rule {
+  string path = 1;
+  string op = 2; // one of > >= < <=
+  double threshold = 3;
+  google.protobuf.Duration hold_for = 4;
+  string channel = 5;
+}
+
+message RuleStatus {
+  Rule rule = 1;
+  bool firing = 2;
+}
+
+message RulesResponse {
+  repeated RuleStatus rules = 1;
+}
+
+message WatchRequest {}
+
+enum AlertState {
+  ALERT_STATE_UNSPECIFIED = 0;
+  ALERT_STATE_FIRED = 1;
+  ALERT_STATE_RESOLVED = 2;
+}
+
+message AlertEvent {
+  Rule rule = 1;
+  AlertState state = 2;
+}
+
+// WatchResponse is one item on the live feed. Alert is unset for plain samples.
+message WatchResponse {
+  string path = 1;
+  Sample sample = 2;
+  AlertEvent alert = 3;
+}

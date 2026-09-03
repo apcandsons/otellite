@@ -3,6 +3,12 @@
 /cli
 /bin/
 
+# web ui
+/webui/node_modules/
+
+# local make overrides
+/.env
+
 # editor / os
 .DS_Store
 .idea/

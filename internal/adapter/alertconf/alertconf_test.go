@@ -72,3 +72,56 @@ func TestParseEmptyIsFine(t *testing.T) {
 		t.Errorf("cfg=%+v err=%v", cfg, err)
 	}
 }
+
+func TestParseAbsentRule(t *testing.T) {
+	cfg, err := alertconf.Parse(strings.NewReader(`
+channel ops slack https://example.com/hook
+alert /iam/iam-api/metrics/process.cpu.utilization.dat absent for 30s to ops
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Rules) != 1 {
+		t.Fatalf("rules = %+v", cfg.Rules)
+	}
+	r := cfg.Rules[0]
+	if r.Op != domain.OpAbsent || r.Threshold != 0 || r.For != 30*time.Second || r.Channel != "ops" || r.Stream.Name != "process.cpu.utilization" {
+		t.Errorf("rule = %+v", r)
+	}
+	for _, bad := range []string{
+		"alert /iam/iam-api/metrics/x.dat absent 30s to ops",       // missing "for"
+		"alert /iam/iam-api/metrics/x.dat absent for 30s ops",      // missing "to"
+		"alert /iam/iam-api/metrics/x.dat absent 5 for 30s to ops", // no threshold allowed
+	} {
+		if _, err := alertconf.Parse(strings.NewReader("channel ops slack https://example.com/hook\n" + bad)); err == nil {
+			t.Errorf("%q: expected error", bad)
+		}
+	}
+}
+
+func TestParseSlackBotChannel(t *testing.T) {
+	cfg, err := alertconf.Parse(strings.NewReader(`
+channel ops slack https://example.com/hook
+channel oncall slack-bot xoxb-123-abc C0123456
+alert /iam/iam-api/metrics/go.memory.used.dat > 1 for 1s to oncall
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Channels) != 2 {
+		t.Fatalf("channels = %+v", cfg.Channels)
+	}
+	bot := cfg.Channels[1]
+	if bot.Name != "oncall" || bot.Type != "slack-bot" || bot.Token != "xoxb-123-abc" || bot.ChannelID != "C0123456" || bot.URL != "" {
+		t.Errorf("bot channel = %+v", bot)
+	}
+	for _, bad := range []string{
+		"channel oncall slack-bot xoxb-123",           // missing channel id
+		"channel oncall slack-bot xoxb-123 C01 extra", // too many
+		"channel oncall teams https://example.com",    // unknown type
+	} {
+		if _, err := alertconf.Parse(strings.NewReader(bad)); err == nil {
+			t.Errorf("%q: expected error", bad)
+		}
+	}
+}

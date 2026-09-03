@@ -86,7 +86,7 @@ func TestCdErrors(t *testing.T) {
 
 func TestCatFormatsSamplesInLocalZone(t *testing.T) {
 	out := run(t, "cd /iam/iam-api/metrics\ncat go.memory.used.dat\n")
-	want := "[2026-04-01 12:34:56 JST] 43122688 Bytes\n[2026-04-01 12:34:57 JST] INFO started\n"
+	want := "[2026-04-01 12:34:56 JST] 41.1 MB\n[2026-04-01 12:34:57 JST] INFO started\n"
 	if !strings.Contains(out, want) {
 		t.Errorf("want %q in:\n%s", want, out)
 	}

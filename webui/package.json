@@ -1,0 +1,26 @@
+{
+  "name": "otellite-webui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.14.1",
+    "@connectrpc/connect": "^2.1.2",
+    "@connectrpc/connect-node": "^2.1.2",
+    "@hono/node-server": "^1.19.0",
+    "hono": "^4.13.5"
+  },
+  "devDependencies": {
+    "@bufbuild/protoc-gen-es": "^2.14.1",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}

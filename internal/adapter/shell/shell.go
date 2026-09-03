@@ -132,11 +132,8 @@ func (s *Shell) resolve(p string) string {
 	return path.Clean(p)
 }
 
-// Format renders one sample as "[local time] value unit".
+// Format renders one sample as "[local time] value unit", with byte
+// counts shown as KB / MB / GB.
 func Format(sm domain.Sample, loc *time.Location) string {
-	line := "[" + sm.Time.In(loc).Format(timeLayout) + "] " + sm.Value
-	if sm.Unit != "" {
-		line += " " + sm.Unit
-	}
-	return line
+	return "[" + sm.Time.In(loc).Format(timeLayout) + "] " + domain.Display(sm.Value, sm.Unit)
 }

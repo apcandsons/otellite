@@ -44,3 +44,20 @@ func TestBurstLifecycle(t *testing.T) {
 		t.Error("should be able to start a new burst after the last ended")
 	}
 }
+
+func TestBurstStartForOverridesDuration(t *testing.T) {
+	t0 := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	b := newBurst(time.Hour)
+	if !b.startFor(t0, 10*time.Second) {
+		t.Fatal("startFor on idle burst should succeed")
+	}
+	if !b.active(t0.Add(9 * time.Second)) {
+		t.Error("should be active at +9s")
+	}
+	if b.active(t0.Add(10 * time.Second)) {
+		t.Error("should be idle at +10s")
+	}
+	if !b.tick(t0.Add(10 * time.Second)) {
+		t.Error("should report ended at +10s")
+	}
+}

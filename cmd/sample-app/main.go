@@ -15,6 +15,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
@@ -37,48 +39,34 @@ var routes = []string{"/login", "/users", "/users/{id}", "/health", "/search"}
 
 func main() {
 	endpoint := flag.String("endpoint", "localhost:4318", "host:port of the system of record (OTLP/HTTP)")
-	namespace := flag.String("namespace", "iam", "service.namespace resource attribute")
-	service := flag.String("service", "iam-api", "service.name resource attribute")
+	namespace := flag.String("namespace", "iam", "service.namespace resource attribute (ignored with -config)")
+	service := flag.String("service", "iam-api", "service.name resource attribute (ignored with -config)")
 	interval := flag.Duration("interval", 5*time.Second, "how often metrics are exported")
-	rps := flag.Float64("rps", 20, "simulated requests per second")
+	rps := flag.Float64("rps", 20, "simulated requests per second (default per service with -config)")
 	burstFor := flag.Duration("burst", 3*time.Minute, "how long a burst (press b) lasts")
+	config := flag.String("config", "", "file listing services to simulate: one 'service <namespace> <name> [rps=<n>]' per line")
 	flag.Parse()
+
+	services := []serviceConfig{{Namespace: *namespace, Service: *service, RPS: *rps}}
+	if *config != "" {
+		var err error
+		if services, err = loadConfig(*config, *rps); err != nil {
+			log.Fatalf("config: %v", err)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
-		semconv.SchemaURL,
-		semconv.ServiceNamespace(*namespace),
-		semconv.ServiceName(*service),
-	))
-	if err != nil {
-		log.Fatalf("resource: %v", err)
-	}
-
-	metricExp, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpoint(*endpoint), otlpmetrichttp.WithInsecure())
-	if err != nil {
-		log.Fatalf("metric exporter: %v", err)
-	}
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithResource(res),
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(*interval))),
-	)
-	defer mp.Shutdown(context.Background())
-
-	logExp, err := otlploghttp.New(ctx, otlploghttp.WithEndpoint(*endpoint), otlploghttp.WithInsecure())
-	if err != nil {
-		log.Fatalf("log exporter: %v", err)
-	}
-	lp := sdklog.NewLoggerProvider(
-		sdklog.WithResource(res),
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp, sdklog.WithExportInterval(*interval))),
-	)
-	defer lp.Shutdown(context.Background())
-
-	sim, err := newSimulator(mp.Meter(scope), lp.Logger(scope), newBurst(*burstFor))
-	if err != nil {
-		log.Fatalf("instruments: %v", err)
+	var sims []*simulator
+	for _, sc := range services {
+		sim, shutdown, err := startService(ctx, *endpoint, sc, *interval, *burstFor)
+		if err != nil {
+			log.Fatalf("%s/%s: %v", sc.Namespace, sc.Service, err)
+		}
+		defer shutdown()
+		sims = append(sims, sim)
+		go sim.run(ctx)
 	}
 
 	restore := rawTerminal()
@@ -86,15 +74,92 @@ func main() {
 	keys := make(chan byte)
 	go readKeys(os.Stdin, keys)
 
-	log.Printf("sample-app: exporting %s/%s to http://%s every %s (%.0f rps)", *namespace, *service, *endpoint, *interval, *rps)
-	log.Printf("sample-app: press b to burst for %s, q to quit", *burstFor)
-	sim.run(ctx, *rps, keys)
+	log.Printf("sample-app: exporting to http://%s every %s", *endpoint, *interval)
+	for i, sim := range sims {
+		log.Printf("  %d: %s (%.0f rps)", i+1, sim.name, sim.rps)
+	}
+	log.Printf("sample-app: press b to burst every service for %s, 1-%d to burst one, p to pause/resume gauges, q to quit", *burstFor, len(sims))
+
+	control(ctx, sims, keys)
 	restore()
 	log.Print("sample-app: shutting down")
 }
 
+// control dispatches keypresses until q, Ctrl-C, or ctx is done.
+func control(ctx context.Context, sims []*simulator, keys <-chan byte) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case k := <-keys:
+			switch {
+			case k == 'b' || k == 'B':
+				for _, sim := range sims {
+					sim.startBurst()
+				}
+			case k >= '1' && k <= '9' && int(k-'1') < len(sims):
+				sims[k-'1'].startBurst()
+			case k == 'p' || k == 'P':
+				for _, sim := range sims {
+					sim.togglePause()
+				}
+			case k == 'q' || k == 'Q' || k == 3: // 3 is Ctrl-C, which raw mode no longer turns into SIGINT
+				return
+			}
+		}
+	}
+}
+
+// startService builds the OTel SDK pipeline for one simulated service and
+// returns its simulator plus a func that flushes and shuts the pipeline down.
+func startService(ctx context.Context, endpoint string, sc serviceConfig, interval, burstFor time.Duration) (*simulator, func(), error) {
+	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNamespace(sc.Namespace),
+		semconv.ServiceName(sc.Service),
+	))
+	if err != nil {
+		return nil, nil, fmt.Errorf("resource: %w", err)
+	}
+	metricExp, err := otlpmetrichttp.New(ctx,
+		otlpmetrichttp.WithEndpoint(endpoint),
+		otlpmetrichttp.WithInsecure(),
+		otlpmetrichttp.WithTemporalitySelector(temporality),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("metric exporter: %w", err)
+	}
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(res),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(interval))),
+	)
+	logExp, err := otlploghttp.New(ctx, otlploghttp.WithEndpoint(endpoint), otlploghttp.WithInsecure())
+	if err != nil {
+		mp.Shutdown(context.Background())
+		return nil, nil, fmt.Errorf("log exporter: %w", err)
+	}
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithResource(res),
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp, sdklog.WithExportInterval(interval))),
+	)
+	shutdown := func() {
+		mp.Shutdown(context.Background())
+		lp.Shutdown(context.Background())
+	}
+	sim, err := newSimulator(mp.Meter(scope), lp.Logger(scope), newBurst(burstFor))
+	if err != nil {
+		shutdown()
+		return nil, nil, fmt.Errorf("instruments: %w", err)
+	}
+	sim.name = sc.Namespace + "/" + sc.Service
+	sim.rps = sc.RPS
+	return sim, shutdown, nil
+}
+
 // simulator fakes a web service's traffic and process state.
 type simulator struct {
+	name   string // namespace/service, for log lines
+	rps    float64
 	logger otellog.Logger
 
 	requests metric.Int64Counter
@@ -105,6 +170,8 @@ type simulator struct {
 	memUsed int64
 	start   time.Time
 	burst   *burst
+	blip    *burst
+	paused  atomic.Bool // gauges stop reporting, so their streams go absent
 }
 
 // During a burst: traffic multiplies, half the requests fail, latency
@@ -119,8 +186,63 @@ const (
 	burstCPU          = 0.92
 )
 
+// Blips are short, random episodes of elevated errors and traffic. They
+// push the per-interval counters over their alert thresholds but end
+// well before a rule's "for" window, so the dashboard shows amber, not
+// red. Bursts (the b key) are what actually fire alerts.
+const (
+	blipRPSFactor   = 5
+	blipErrorRate   = 0.25
+	blipMinFor      = 5 * time.Second
+	blipMaxFor      = 20 * time.Second
+	blipMinGap      = 45 * time.Second
+	blipMaxGap      = 120 * time.Second
+	normalErrorRate = 0.02
+)
+
+// temporality makes request and error counters (and the latency histogram)
+// export the count since the previous export instead of a lifetime total,
+// so they fall back once trouble passes and threshold alerts can resolve.
+// Everything else stays cumulative.
+func temporality(kind sdkmetric.InstrumentKind) metricdata.Temporality {
+	switch kind {
+	case sdkmetric.InstrumentKindCounter, sdkmetric.InstrumentKindHistogram:
+		return metricdata.DeltaTemporality
+	}
+	return metricdata.CumulativeTemporality
+}
+
+// pace is how the request loop should run right now.
+type pace int
+
+const (
+	normal pace = iota
+	blipping
+	bursting
+)
+
+func (p pace) rpsFactor() float64 {
+	switch p {
+	case bursting:
+		return burstRPSFactor
+	case blipping:
+		return blipRPSFactor
+	}
+	return 1
+}
+
+func (p pace) errorRate() float64 {
+	switch p {
+	case bursting:
+		return burstErrorRate
+	case blipping:
+		return blipErrorRate
+	}
+	return normalErrorRate
+}
+
 func newSimulator(m metric.Meter, l otellog.Logger, b *burst) (*simulator, error) {
-	s := &simulator{logger: l, memUsed: 40 << 20, start: time.Now(), burst: b}
+	s := &simulator{logger: l, memUsed: 40 << 20, start: time.Now(), burst: b, blip: newBurst(blipMaxFor)}
 	var err error
 	if s.requests, err = m.Int64Counter("http.server.requests", metric.WithUnit("1"), metric.WithDescription("Total HTTP requests")); err != nil {
 		return nil, err
@@ -136,7 +258,9 @@ func newSimulator(m metric.Meter, l otellog.Logger, b *burst) (*simulator, error
 	}
 	_, err = m.Int64ObservableGauge("go.memory.used", metric.WithUnit("By"), metric.WithDescription("Simulated heap in use"),
 		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
-			o.Observe(s.memUsed)
+			if !s.paused.Load() {
+				o.Observe(s.memUsed)
+			}
 			return nil
 		}))
 	if err != nil {
@@ -144,7 +268,9 @@ func newSimulator(m metric.Meter, l otellog.Logger, b *burst) (*simulator, error
 	}
 	_, err = m.Float64ObservableGauge("process.cpu.utilization", metric.WithUnit("1"), metric.WithDescription("Simulated CPU utilization 0..1"),
 		metric.WithFloat64Callback(func(_ context.Context, o metric.Float64Observer) error {
-			o.Observe(s.cpu())
+			if !s.paused.Load() {
+				o.Observe(s.cpu())
+			}
 			return nil
 		}))
 	if err != nil {
@@ -169,44 +295,79 @@ func (s *simulator) cpu() float64 {
 	return math.Max(0, math.Min(1, v))
 }
 
-// run drives simulated traffic until ctx is cancelled. Keys arriving on
-// keys control it: b starts a burst, q (or Ctrl-C in raw mode) quits.
-func (s *simulator) run(ctx context.Context, rps float64, keys <-chan byte) {
-	interval := time.Duration(float64(time.Second) / rps)
+// togglePause stops or resumes the memory and CPU gauges. While paused
+// their streams receive no samples, which is what an "absent" rule catches.
+func (s *simulator) togglePause() {
+	paused := !s.paused.Load()
+	s.paused.Store(paused)
+	if paused {
+		log.Printf("%s: gauges paused (go.memory.used and process.cpu.utilization go absent)", s.name)
+	} else {
+		log.Printf("%s: gauges resumed", s.name)
+	}
+}
+
+// startBurst begins a burst unless one is already running.
+func (s *simulator) startBurst() {
+	if s.burst.start(time.Now()) {
+		log.Printf("%s: Bursting...", s.name)
+	}
+}
+
+// pace reports whether the service is bursting, blipping, or idle.
+func (s *simulator) pace(now time.Time) pace {
+	switch {
+	case s.burst.active(now):
+		return bursting
+	case s.blip.active(now):
+		return blipping
+	}
+	return normal
+}
+
+func randDuration(lo, hi time.Duration) time.Duration {
+	return lo + time.Duration(rand.Int64N(int64(hi-lo)))
+}
+
+// run drives simulated traffic until ctx is cancelled, speeding up while
+// a burst or blip is active and scheduling random blips in between.
+func (s *simulator) run(ctx context.Context) {
+	interval := time.Duration(float64(time.Second) / s.rps)
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
+	current := normal
+	nextBlip := time.Now().Add(randDuration(blipMinGap, blipMaxGap))
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case k := <-keys:
-			switch k {
-			case 'b', 'B':
-				if s.burst.start(time.Now()) {
-					log.Print("Bursting...")
-					tick.Reset(interval / burstRPSFactor)
-				}
-			case 'q', 'Q', 3: // 3 is Ctrl-C, which raw mode no longer turns into SIGINT
-				return
-			}
 		case <-tick.C:
-			s.request(ctx)
-			if s.burst.tick(time.Now()) {
-				log.Print("Ended burst")
-				tick.Reset(interval)
+			now := time.Now()
+			if now.After(nextBlip) && !s.burst.active(now) {
+				d := randDuration(blipMinFor, blipMaxFor)
+				s.blip.startFor(now, d)
+				nextBlip = now.Add(d + randDuration(blipMinGap, blipMaxGap))
+				log.Printf("%s: blip for %s (%.0f%% errors, %dx traffic)", s.name, d.Round(time.Second), blipErrorRate*100, blipRPSFactor)
 			}
+			if p := s.pace(now); p != current {
+				current = p
+				tick.Reset(time.Duration(float64(interval) / p.rpsFactor()))
+			}
+			s.request(ctx)
+			if s.burst.tick(now) {
+				log.Printf("%s: Ended burst", s.name)
+			}
+			s.blip.tick(now)
 		}
 	}
 }
 
 func (s *simulator) request(ctx context.Context) {
-	bursting := s.burst.active(time.Now())
+	p := s.pace(time.Now())
+	bursting := p == bursting
 	route := routes[rand.IntN(len(routes))]
 	status := 200
-	errorRate := 0.02
-	if bursting {
-		errorRate = burstErrorRate
-	}
+	errorRate := p.errorRate()
 	switch r := rand.Float64(); {
 	case r < errorRate:
 		status = 500
