@@ -91,9 +91,16 @@ svg.timeline .axis { stroke:var(--line); } svg.timeline text { fill:var(--muted)
 #modal .body:empty::before { content:"loading…"; color:var(--muted); }
 #modal .history h2 { padding-right:120px; }
 .empty { color:var(--muted); padding:24px; text-align:center; }
+form.login { max-width:360px; margin:60px auto; padding:24px; background:var(--panel); border:1px solid var(--line); border-radius:10px; display:flex; flex-direction:column; gap:12px; }
+form.login h2 { margin:0 0 4px; font-size:16px; }
+form.login label { display:flex; flex-direction:column; gap:6px; color:var(--muted); font-size:12px; }
+form.login input[type=password] { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+form.login button { font:inherit; padding:8px 12px; border:0; border-radius:6px; background:#7cb7ff; color:#0f1217; cursor:pointer; }
+form.login .error { margin:0; color:var(--red); font-size:13px; }
 `;
 
-function Layout(props: { title: string; active: "tabular" | "heatmap" | "history"; history?: string; mainClass?: string; children?: Child }) {
+function Layout(props: { title: string; active: "tabular" | "heatmap" | "history" | "login"; base: string; history?: string; mainClass?: string; bare?: boolean; children?: Child }) {
+  const { base } = props;
   return (
     <html lang="en">
       <head>
@@ -102,25 +109,27 @@ function Layout(props: { title: string; active: "tabular" | "heatmap" | "history
         <title>{props.title}</title>
         <style dangerouslySetInnerHTML={{ __html: css }} />
       </head>
-      <body data-history={props.history}>
+      <body data-history={props.history} data-base={base}>
         <header>
           <h1>OTel Lite</h1>
           <nav>
-            <a href="/" class={props.active === "tabular" ? "active" : ""}>Tabular</a>
-            <a href="/heatmap" class={props.active === "heatmap" ? "active" : ""}>Heatmap</a>
+            <a href={`${base}/`} class={props.active === "tabular" ? "active" : ""}>Tabular</a>
+            <a href={`${base}/heatmap`} class={props.active === "heatmap" ? "active" : ""}>Heatmap</a>
           </nav>
           <span id="conn">connecting</span>
         </header>
         <main class={props.mainClass}>{props.children}</main>
-        <div id="modal" hidden>
-          <div class="backdrop"></div>
-          <div class="dialog" role="dialog" aria-modal="true">
-            <a class="open-page" href="#">open page ↗</a>
-            <button class="close" aria-label="close" title="close (Esc)">×</button>
-            <div class="body"></div>
+        {!props.bare && (
+          <div id="modal" hidden>
+            <div class="backdrop"></div>
+            <div class="dialog" role="dialog" aria-modal="true">
+              <a class="open-page" href="#">open page ↗</a>
+              <button class="close" aria-label="close" title="close (Esc)">×</button>
+              <div class="body"></div>
+            </div>
           </div>
-        </div>
-        <script src="/app.js"></script>
+        )}
+        {!props.bare && <script src={`${base}/app.js`}></script>}
       </body>
     </html>
   );
@@ -160,13 +169,13 @@ function statuses(live: Live, kpis: Kpi[]): KpiSeverity[] {
 const svcRoll = (live: Live, s: Service) => rollup(statuses(live, s.kpis));
 const nsRoll = (live: Live, n: Namespace) => rollup(statuses(live, n.services.flatMap((s) => s.kpis)));
 
-function KpiRow(props: { live: Live; kpi: Kpi }) {
-  const { live, kpi } = props;
+function KpiRow(props: { live: Live; kpi: Kpi; base: string }) {
+  const { live, kpi, base } = props;
   const latest = live.latest(kpi.path);
   return (
     <tr class={`kpi ${live.status(kpi.path)}`} data-path={kpi.path}>
       <td class="status"><span class="dot"></span></td>
-      <td class="name"><a href={historyHref(kpi)}>{kpi.name}</a></td>
+      <td class="name"><a href={historyHref(kpi, base)}>{kpi.name}</a></td>
       <td class="value">{latest ? fmtValue(latest.raw, latest.unit) : "–"}</td>
       <td class="spark"><Sparkline values={live.recent(kpi.path).map((p) => p.value)} /></td>
       <td class="rules">{ruleText(kpi, latest?.unit)}</td>
@@ -174,10 +183,10 @@ function KpiRow(props: { live: Live; kpi: Kpi }) {
   );
 }
 
-export function TabularPage(props: { live: Live }) {
-  const { live } = props;
+export function TabularPage(props: { live: Live; base?: string }) {
+  const { live, base = "" } = props;
   return (
-    <Layout title="OTel Lite" active="tabular">
+    <Layout title="OTel Lite" active="tabular" base={base}>
       {live.tree.length === 0 && <Empty live={live} />}
       {live.tree.map((ns) => (
         <details class="ns" data-ns={ns.name} open>
@@ -192,7 +201,7 @@ export function TabularPage(props: { live: Live }) {
                 <Badges scope={`svc:${ns.name}/${svc.name}`} roll={svcRoll(live, svc)} />
               </summary>
               <table class="kpis">
-                <tbody>{svc.kpis.map((kpi) => <KpiRow live={live} kpi={kpi} />)}</tbody>
+                <tbody>{svc.kpis.map((kpi) => <KpiRow live={live} kpi={kpi} base={base} />)}</tbody>
               </table>
             </details>
           ))}
@@ -218,14 +227,14 @@ function sizeClass(px: { w: number; h: number }): string {
   return "";
 }
 
-function Tile(props: { live: Live; kpi: Kpi; rect: Rect; px: { w: number; h: number } }) {
-  const { live, kpi, rect, px } = props;
+function Tile(props: { live: Live; kpi: Kpi; rect: Rect; px: { w: number; h: number }; base: string }) {
+  const { live, kpi, rect, px, base } = props;
   const latest = live.latest(kpi.path);
   const cls = ["tile", live.status(kpi.path), sizeClass(px)].filter(Boolean).join(" ");
   const value = latest ? fmtValue(latest.raw, latest.unit) : "–";
   const rules = ruleText(kpi, latest?.unit);
   return (
-    <a class={cls} data-path={kpi.path} href={historyHref(kpi)} style={place(rect)} title={`${kpi.name}: ${value} (${rules})`}>
+    <a class={cls} data-path={kpi.path} href={historyHref(kpi, base)} style={place(rect)} title={`${kpi.name}: ${value} (${rules})`}>
       <span class="kname">{kpi.name}</span>
       <span class="kval">{value}</span>
       <span class="krule">{rules}</span>
@@ -237,30 +246,30 @@ const weightOf = (live: Live, kpi: Kpi) => kpiWeight(kpi, live.latest(kpi.path)?
 const svcWeight = (live: Live, svc: Service) => svc.kpis.reduce((s, k) => s + weightOf(live, k), 0);
 const nsWeight = (live: Live, ns: Namespace) => ns.services.reduce((s, svc) => s + svcWeight(live, svc), 0);
 
-function ServiceSection(props: { live: Live; svc: Service; rect: Rect; px: { w: number; h: number } }) {
-  const { live, svc, rect, px } = props;
+function ServiceSection(props: { live: Live; svc: Service; rect: Rect; px: { w: number; h: number }; base: string }) {
+  const { live, svc, rect, px, base } = props;
   const inner = { w: px.w, h: Math.max(0, px.h - SVC_HEADER) };
   const tiles = squarify(svc.kpis.map((k) => ({ key: k.path, weight: weightOf(live, k) })), FULL);
   return (
     <section class="svc" data-svc={svc.name} style={place(rect)}>
       <h3>
-        <a class="ns-link" href={`/heatmap/${svc.namespace}`}>{svc.namespace}</a>
+        <a class="ns-link" href={`${base}/heatmap/${svc.namespace}`}>{svc.namespace}</a>
         <span class="sep">/</span>
-        <a href={`/heatmap/${svc.namespace}/${svc.name}`}>{svc.name}</a>
+        <a href={`${base}/heatmap/${svc.namespace}/${svc.name}`}>{svc.name}</a>
         <Badges scope={`svc:${svc.namespace}/${svc.name}`} roll={svcRoll(live, svc)} />
       </h3>
       <div class="inner">
         {tiles.map((t) => {
           const kpi = svc.kpis.find((k) => k.path === t.key)!;
-          return <Tile live={live} kpi={kpi} rect={t} px={{ w: (inner.w * t.w) / 100, h: (inner.h * t.h) / 100 }} />;
+          return <Tile live={live} kpi={kpi} rect={t} px={{ w: (inner.w * t.w) / 100, h: (inner.h * t.h) / 100 }} base={base} />;
         })}
       </div>
     </section>
   );
 }
 
-function NamespaceSection(props: { live: Live; ns: Namespace; rect: Rect; px: { w: number; h: number } }) {
-  const { live, ns, rect, px } = props;
+function NamespaceSection(props: { live: Live; ns: Namespace; rect: Rect; px: { w: number; h: number }; base: string }) {
+  const { live, ns, rect, px, base } = props;
   const inner = { w: px.w, h: px.h };
   const cells = squarify(ns.services.map((s) => ({ key: s.name, weight: svcWeight(live, s) })), FULL);
   return (
@@ -268,15 +277,15 @@ function NamespaceSection(props: { live: Live; ns: Namespace; rect: Rect; px: { 
       <div class="inner">
         {cells.map((c) => {
           const svc = ns.services.find((s) => s.name === c.key)!;
-          return <ServiceSection live={live} svc={svc} rect={c} px={{ w: (inner.w * c.w) / 100, h: (inner.h * c.h) / 100 }} />;
+          return <ServiceSection live={live} svc={svc} rect={c} px={{ w: (inner.w * c.w) / 100, h: (inner.h * c.h) / 100 }} base={base} />;
         })}
       </div>
     </section>
   );
 }
 
-export function HeatmapPage(props: { live: Live; namespace?: string; service?: string }) {
-  const { live, namespace, service } = props;
+export function HeatmapPage(props: { live: Live; base?: string; namespace?: string; service?: string }) {
+  const { live, namespace, service, base = "" } = props;
   let tree = live.tree;
   if (namespace !== undefined) {
     const ns = tree.find((n) => n.name === namespace);
@@ -289,19 +298,19 @@ export function HeatmapPage(props: { live: Live; namespace?: string; service?: s
       tree = [ns];
     }
   }
-  const crumbs = [<a href="/heatmap">all</a>];
-  if (namespace) crumbs.push(<span> / </span>, <a href={`/heatmap/${namespace}`}>{namespace}</a>);
-  if (namespace && service) crumbs.push(<span> / </span>, <a href={`/heatmap/${namespace}/${service}`}>{service}</a>);
+  const crumbs = [<a href={`${base}/heatmap`}>all</a>];
+  if (namespace) crumbs.push(<span> / </span>, <a href={`${base}/heatmap/${namespace}`}>{namespace}</a>);
+  if (namespace && service) crumbs.push(<span> / </span>, <a href={`${base}/heatmap/${namespace}/${service}`}>{service}</a>);
   const cells = squarify(tree.map((ns) => ({ key: ns.name, weight: nsWeight(live, ns) })), FULL);
   return (
-    <Layout title="OTel Lite heatmap" active="heatmap" mainClass="heat">
+    <Layout title="OTel Lite heatmap" active="heatmap" mainClass="heat" base={base}>
       <div class="crumbs">{crumbs}</div>
       {tree.length === 0 && <Empty live={live} />}
       {tree.length > 0 && (
         <div class="treemap">
           {cells.map((c) => {
             const ns = tree.find((n) => n.name === c.key)!;
-            return <NamespaceSection live={live} ns={ns} rect={c} px={{ w: (MAP_PX.w * c.w) / 100, h: (MAP_PX.h * c.h) / 100 }} />;
+            return <NamespaceSection live={live} ns={ns} rect={c} px={{ w: (MAP_PX.w * c.w) / 100, h: (MAP_PX.h * c.h) / 100 }} base={base} />;
           })}
         </div>
       )}
@@ -390,14 +399,32 @@ export function HistoryDetail(props: { live: Live; kpi: Kpi; samples: SamplePoin
   );
 }
 
-export function HistoryPage(props: { live: Live; kpi: Kpi; samples: SamplePoint[] }) {
-  const { kpi } = props;
+export function HistoryPage(props: { live: Live; base?: string; kpi: Kpi; samples: SamplePoint[] }) {
+  const { live, kpi, samples, base = "" } = props;
   return (
-    <Layout title={`${kpi.name} history`} active="history" history={kpi.path}>
+    <Layout title={`${kpi.name} history`} active="history" history={kpi.path} base={base}>
       <div class="crumbs">
-        <a href="/">tabular</a> / <a href={`/heatmap/${kpi.namespace}`}>{kpi.namespace}</a> / <a href={`/heatmap/${kpi.namespace}/${kpi.service}`}>{kpi.service}</a>
+        <a href={`${base}/`}>tabular</a> / <a href={`${base}/heatmap/${kpi.namespace}`}>{kpi.namespace}</a> / <a href={`${base}/heatmap/${kpi.namespace}/${kpi.service}`}>{kpi.service}</a>
       </div>
-      <HistoryDetail {...props} />
+      <HistoryDetail live={live} kpi={kpi} samples={samples} />
+    </Layout>
+  );
+}
+
+/** The token form. Bare: no live script, since nothing behind it is reachable yet. */
+export function LoginPage(props: { base: string; next: string; error?: boolean }) {
+  return (
+    <Layout title="OTel Lite login" active="login" base={props.base} bare>
+      <form class="login" method="post" action={`${props.base}/login`}>
+        <h2>Sign in</h2>
+        {props.error && <p class="error">That token is not right.</p>}
+        <input type="hidden" name="next" value={props.next} />
+        <label>
+          Token
+          <input type="password" name="token" autocomplete="current-password" autofocus />
+        </label>
+        <button type="submit">Sign in</button>
+      </form>
     </Layout>
   );
 }
