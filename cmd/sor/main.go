@@ -34,7 +34,20 @@ func main() {
 	alerts := flag.String("alerts", "", "path to alert.conf (no alerting when empty)")
 	checkEvery := flag.Duration("check-every", time.Second, "how often absent rules are evaluated")
 	validate := flag.Bool("validate", false, "parse -alerts, print the rule and channel counts, and exit without serving")
+	healthcheck := flag.Bool("healthcheck", false, "GET /fs/ls?path=/ on a running sor at -listen and exit 0 on HTTP 200, 1 otherwise (for container health commands)")
 	flag.Parse()
+
+	if *healthcheck {
+		url, err := healthURL(*listen)
+		if err == nil {
+			err = checkHealth(url, 2*time.Second)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *validate {
 		summary, err := validateAlerts(*alerts)
