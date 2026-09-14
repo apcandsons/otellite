@@ -26,7 +26,7 @@ BASE_PATH   ?=
 WEBUI_TOKEN ?=
 COOKIE_SECURE ?=
 
-.PHONY: all build sor cli sample-app test test-race test-one vet fmt tidy check proto run-sor validate run-cli run-sample-app webui webui-test run-webui clean help
+.PHONY: all build sor awsbridge cli sample-app test test-race test-one vet fmt tidy check proto run-sor validate run-cli run-sample-app webui webui-test run-webui clean help
 
 all: build ## Build both binaries (default)
 
@@ -34,6 +34,9 @@ build: sor cli sample-app ## Build sor, cli and sample-app into bin/
 
 sor: ## Build the system of record
 	$(GO) build $(GOFLAGS) -o $(SOR) ./cmd/sor
+
+awsbridge: ## Build the AWS -> SoR sidecar
+	$(GO) build $(GOFLAGS) -o $(BIN_DIR)/awsbridge ./cmd/awsbridge
 
 cli: ## Build the CLI client
 	$(GO) build $(GOFLAGS) -o $(CLI) ./cmd/cli

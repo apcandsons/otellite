@@ -60,6 +60,7 @@ Suggested layout (adjust as the code grows, but keep the layering):
 ```
 cmd/sor/            main for the system of record
 cmd/cli/            main for the CLI
+cmd/awsbridge/      main for the AWS -> SoR sidecar (CloudWatch, ECS gauges from bridge.conf)
 internal/domain/    entities: namespace, service, signal stream, sample; retention rules
 internal/usecase/   ingest, evict, browse (ls/cd/cat) use cases
 internal/adapter/   OTel receiver, in-memory store, CLI transport/protocol

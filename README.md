@@ -275,6 +275,55 @@ ENTRYPOINT ["/sor", "-alerts", "/alert.conf"]
 The real `SLACK_WEBHOOK_URL` arrives as a container environment variable
 (an ECS secret, for instance) and is expanded when `sor` starts.
 
+## awsbridge
+
+`awsbridge` is a sidecar for the SoR that polls AWS for resources you do
+not run yourself (ECS services, SQS queues, RDS instances) and exports
+them as ordinary gauges, so the same `cat` and `alert` rules cover them.
+It needs read-only IAM only: `cloudwatch:GetMetricData` and
+`ecs:DescribeServices`.
+
+Targets live in a `bridge.conf` (see `bridge.sample.conf`), one per line:
+
+```
+region ap-northeast-1
+every 60s                                   # default
+
+ecs comm-staging/comm-bff  as comm/comm-bff/ecs
+sqs comm-staging-embed-dlq as comm/queues/embed_dlq
+rds comm-staging-db        as comm/comm-sor/rds
+```
+
+`<kind> <id> as <ns>/<svc>/<prefix>` puts every metric of the target under
+`/<ns>/<svc>/metrics/<prefix>.<name>.dat`. Per kind:
+
+| kind | id | metrics (`<prefix>.` + name) |
+|------|----|------------------------------|
+| `ecs` | `cluster/service` | `running_tasks`, `desired_tasks`, `pending_tasks`, `cpu.utilization`, `memory.utilization` |
+| `sqs` | queue name | `visible`, `in_flight`, `oldest_age` (0 when the queue is idle) |
+| `rds` | DB instance identifier | `cpu.utilization`, `free_storage`, `connections`, `freeable_memory` |
+
+Task counts come from `DescribeServices`; everything else is the newest
+CloudWatch datapoint in the last five minutes, fetched in one
+`GetMetricData` call per tick. A metric with no datapoint is skipped
+(SQS reports 0 instead, since idle queues publish nothing). A target whose
+service cannot be described is logged and skipped; a CloudWatch failure
+is logged after the task counts have still been exported.
+
+Environment is the same contract as any instrumented service:
+`OTEL_EXPORTER_OTLP_ENDPOINT` names the SoR, and
+`OTEL_SERVICE_NAME=awsbridge` plus `OTEL_RESOURCE_ATTRIBUTES=service.namespace=<ns>`
+place the bridge's own `process.uptime` so an `absent` rule can watch the
+bridge itself. AWS credentials come from the usual chain (task role).
+
+```
+awsbridge -conf /bridge.conf            # poll until SIGTERM
+awsbridge -conf bridge.conf -validate   # parse and exit; works offline
+```
+
+`-validate` prints `N targets, region R, every D`; use it as the image
+build check, the same way `sor -validate` guards `alert.conf`.
+
 ## Web dashboard
 
 `webui/` is a small [Hono](https://hono.dev) server that talks to the SoR
