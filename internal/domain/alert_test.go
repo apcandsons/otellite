@@ -148,6 +148,36 @@ func TestAbsentMonitorFiresIfStreamNeverReports(t *testing.T) {
 	}
 }
 
+func TestAbsentMonitorGraceDelaysOnlyTheFirstFire(t *testing.T) {
+	m := domain.NewMonitor(domain.Rule{Op: domain.OpAbsent, For: time.Minute})
+	m.Grace = 2 * time.Minute
+	t0 := time.Now()
+	m.Check(t0) // arms at start; the never-reporting stream still fires, just later
+	if m.Check(t0.Add(time.Minute)) != domain.NoEvent {
+		t.Error("must stay quiet inside the grace window")
+	}
+	if m.Check(t0.Add(2*time.Minute+59*time.Second)) != domain.NoEvent {
+		t.Error("grace+For has not elapsed yet")
+	}
+	if m.Check(t0.Add(3*time.Minute)) != domain.Fired {
+		t.Error("a stream that never reports must fire at start+grace+For")
+	}
+}
+
+func TestAbsentMonitorGraceDoesNotMuteAfterFirstSample(t *testing.T) {
+	m := domain.NewMonitor(domain.Rule{Op: domain.OpAbsent, For: time.Minute})
+	m.Grace = 2 * time.Minute
+	t0 := time.Now()
+	m.Check(t0)
+	m.Observe(t0.Add(10*time.Second), 1) // first sample inside the grace window
+	if m.Check(t0.Add(69*time.Second)) != domain.NoEvent {
+		t.Error("For has not elapsed since the sample")
+	}
+	if m.Check(t0.Add(70*time.Second)) != domain.Fired {
+		t.Error("after a sample the ordinary For applies, even inside grace")
+	}
+}
+
 func TestThresholdMonitorIgnoresCheck(t *testing.T) {
 	m := domain.NewMonitor(domain.Rule{Op: domain.OpGreater, Threshold: 1, For: time.Second})
 	if m.Check(time.Now().Add(time.Hour)) != domain.NoEvent {

@@ -35,6 +35,7 @@ func main() {
 	checkEvery := flag.Duration("check-every", time.Second, "how often absent rules are evaluated")
 	validate := flag.Bool("validate", false, "parse -alerts, print the rule and channel counts, and exit without serving")
 	healthcheck := flag.Bool("healthcheck", false, "GET /fs/ls?path=/ on a running sor at -listen and exit 0 on HTTP 200, 1 otherwise (for container health commands)")
+	absentGrace := flag.Duration("absent-grace", 0, "extra silence tolerated before an absent rule fires for the first time after start (covers load-balancer handover on task replacement)")
 	flag.Parse()
 
 	if *healthcheck {
@@ -68,14 +69,21 @@ func main() {
 	sink := &tee{ingester: ingester, feed: feed}
 	var alertStatus grpcapi.Alerts
 	if *alerts != "" {
+		if *absentGrace < 0 {
+			log.Fatal("-absent-grace must be >= 0")
+		}
 		cfg, err := alertconf.Load(*alerts)
 		if err != nil {
 			log.Fatal(err)
 		}
 		notifier := usecase.Notifiers{slack.New(destinations(cfg), nil, nil), feed}
 		alerter := usecase.NewAlerter(cfg.Rules, notifier)
+		alerter.SetAbsentGrace(*absentGrace)
 		sink.alerter = alerter
 		alertStatus = alerter
+		if err := alerter.Check(time.Now()); err != nil { // arm now, anchored at start
+			log.Printf("alert: %v", err)
+		}
 		go func() {
 			for range time.Tick(*checkEvery) {
 				if err := alerter.Check(time.Now()); err != nil {
@@ -83,7 +91,7 @@ func main() {
 				}
 			}
 		}()
-		log.Printf("alerting: %d rules, %d channels from %s", len(cfg.Rules), len(cfg.Channels), *alerts)
+		log.Printf("alerting: %d rules, %d channels from %s (absent grace %s)", len(cfg.Rules), len(cfg.Channels), *alerts, *absentGrace)
 	}
 
 	if *grpcListen != "" {

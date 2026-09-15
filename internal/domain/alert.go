@@ -74,8 +74,9 @@ func (e Event) String() string { return eventNames[e] }
 // Observe marking the stream as alive.
 type Monitor struct {
 	Rule     Rule
-	since    time.Time // threshold rules: start of the current breach
-	lastSeen time.Time // absent rules: last sample, or the first Check
+	Grace    time.Duration // absent rules: extra silence tolerated before the FIRST fire after arming
+	since    time.Time     // threshold rules: start of the current breach
+	lastSeen time.Time     // absent rules: last sample, or the first Check (+Grace)
 	fired    bool
 }
 
@@ -113,14 +114,15 @@ func (m *Monitor) Observe(t time.Time, value float64) Event {
 }
 
 // Check evaluates an absent rule against the clock. The first call arms
-// it, so a stream that never reports fires one For later. Threshold rules
-// ignore Check.
+// it, so a stream that never reports fires Grace+For later; a sample resets
+// the clock and ordinary For applies from then on. Threshold rules ignore
+// Check.
 func (m *Monitor) Check(now time.Time) Event {
 	if m.Rule.Op != OpAbsent {
 		return NoEvent
 	}
 	if m.lastSeen.IsZero() {
-		m.lastSeen = now
+		m.lastSeen = now.Add(m.Grace)
 		return NoEvent
 	}
 	if m.fired || now.Sub(m.lastSeen) < m.Rule.For {
