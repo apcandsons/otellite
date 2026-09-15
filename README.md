@@ -197,7 +197,10 @@ alert /iam/iam-api/metrics/process.cpu.utilization.dat absent for 30s to ops
 
 It fires when no sample has been ingested for the duration (evaluated every
 second, `-check-every`), and resolves on the next sample. A stream that
-never reports at all fires one duration after the SoR starts.
+never reports at all fires one duration after the SoR starts; `-absent-grace 2m`
+adds extra silence before that first fire only (a freshly started SoR may have
+no samples yet while a load balancer hands tenants over). Once a sample
+arrives, the plain duration applies.
 
 Channels come in two kinds:
 

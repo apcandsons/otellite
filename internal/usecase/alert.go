@@ -39,6 +39,18 @@ func NewAlerter(rules []domain.Rule, notifier Notifier) *Alerter {
 	return a
 }
 
+// SetAbsentGrace lets every absent rule stay quiet for d beyond its For on
+// the first evaluation after start — the window in which a freshly started
+// sor may legitimately have no samples yet (load-balancer handover on task
+// replacement). Call it before the first Check.
+func (a *Alerter) SetAbsentGrace(d time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, m := range a.ordered {
+		m.Grace = d
+	}
+}
+
 // Status reports every rule in configuration order with its firing state.
 func (a *Alerter) Status() []RuleStatus {
 	a.mu.Lock()
