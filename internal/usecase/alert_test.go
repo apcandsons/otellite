@@ -163,3 +163,38 @@ func TestAlerterCheckReturnsNotifierError(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// SetAbsentGrace delays only the first absent fire; threshold rules are
+// untouched and still fire from samples alone.
+func TestAlerterAbsentGraceAppliesToAbsentRulesOnly(t *testing.T) {
+	nf := &fakeNotifier{}
+	absent := domain.Rule{Stream: memID, Op: domain.OpAbsent, For: time.Minute, Channel: "ops"}
+	thresh := domain.Rule{Stream: webID, Op: domain.OpGreater, Threshold: 1, For: time.Second, Channel: "ops"}
+	al := usecase.NewAlerter([]domain.Rule{absent, thresh}, nf)
+	al.SetAbsentGrace(2 * time.Minute)
+
+	at := func(sec int) time.Time { return t0.Add(time.Duration(sec) * time.Second) }
+	for _, sec := range []int{0, 60, 179} { // arm at start, then stay quiet through grace+For
+		if err := al.Check(at(sec)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(nf.sent) != 0 {
+		t.Fatalf("fired inside the grace window: %+v", nf.sent)
+	}
+	if err := al.Check(at(180)); err != nil {
+		t.Fatal(err)
+	}
+	if len(nf.sent) != 1 || nf.sent[0].Rule != absent || nf.sent[0].Event != domain.Fired {
+		t.Fatalf("the never-reporting stream must fire at start+grace+For: %+v", nf.sent)
+	}
+
+	for _, sec := range []int{0, 1} { // threshold: breach sustained for For fires on samples, grace or not
+		if err := al.Observe(webID, domain.Sample{Time: at(sec), Value: "5"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(nf.sent) != 2 || nf.sent[1].Rule != thresh || nf.sent[1].Event != domain.Fired {
+		t.Fatalf("threshold rule must be unaffected by the grace: %+v", nf.sent)
+	}
+}
